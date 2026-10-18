@@ -23,6 +23,14 @@ Providing business context and relationships to support AI-driven decision makin
 Enterprise AI Strategy
 Connecting data foundations to business outcomes and AI adoption.
 
+## Featured Architecture
+
+### Commercial Food Waste Modernization
+
+Legacy inventory and range management systems were modernized using an event-driven integration approach and Microsoft Fabric.
+
+![Commercial Food Waste Modernization](diagrams/commercial-food-waste-modernization-architecture.png)
+
 Roadmap
 Currently Under Development
 Enterprise AI Readiness Playbook
