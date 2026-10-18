@@ -29,7 +29,7 @@ Fabric Reference Architecture
 Data Product Operating Model
 Governance Framework
 Presentations and Diagrams
-Author
-Thivakar Allimuthu
 
+Author 
+Thivakar Allimuthu 
 Data Product Owner | Enterprise Data Platforms | Data Governance | AI Strategy
