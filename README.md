@@ -2,7 +2,7 @@ Enterprise AI Readiness Framework
 Overview
 This repository contains frameworks, reference architectures, and operating models that help organizations build trusted, AI-ready data foundations.
 
-The content is based on practical experience in enterprise data platforms, analytics, governance, and data product management.
+The content is based on practical experience in enterprise data platforms, analytics, governance and data product management.
 
 Core Themes
 Data Products
@@ -23,12 +23,18 @@ Providing business context and relationships to support AI-driven decision makin
 Enterprise AI Strategy
 Connecting data foundations to business outcomes and AI adoption.
 
-Repository Structure
-AI Readiness Playbook
-Fabric Reference Architecture
+Roadmap
+Currently Under Development
+Enterprise AI Readiness Playbook
+Microsoft Fabric Reference Architecture
 Data Product Operating Model
-Governance Framework
-Presentations and Diagrams
+Enterprise Data Governance Framework
+AI Adoption and Governance Playbook
+Planned Deliverables
+Executive Presentation Decks
+Assessment Templates
+Strategy Frameworks
+Architecture Diagrams
 
 Author 
 Thivakar Allimuthu 
