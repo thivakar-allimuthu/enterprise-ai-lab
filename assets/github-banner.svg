@@ -2,68 +2,36 @@
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="420" gradientUnits="userSpaceOnUse">
       <stop stop-color="#0B1020"/>
-      <stop offset="0.5" stop-color="#101A2E"/>
-      <stop offset="1" stop-color="#0A1629"/>
+      <stop offset="0.5" stop-color="#1E3A8A"/>
+      <stop offset="1" stop-color="#0F172A"/>
     </linearGradient>
-    <linearGradient id="line1" x1="105" y1="90" x2="390" y2="285" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#6EE7F9"/>
-      <stop offset="1" stop-color="#6C63FF"/>
-    </linearGradient>
-    <linearGradient id="line2" x1="520" y1="90" x2="880" y2="280" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#20C997"/>
-      <stop offset="1" stop-color="#60A5FA"/>
-    </linearGradient>
-    <linearGradient id="line3" x1="980" y1="80" x2="1220" y2="300" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFD166"/>
-      <stop offset="1" stop-color="#FF7E7E"/>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#111827" stop-opacity="0.88"/>
+      <stop offset="1" stop-color="#0F172A" stop-opacity="0.7"/>
     </linearGradient>
   </defs>
 
   <rect width="1280" height="420" fill="url(#bg)"/>
 
+  <rect x="74" y="60" width="420" height="300" rx="28" fill="url(#panel)" stroke="#8BB8FF" stroke-opacity="0.25"/>
+
+  <text x="108" y="170" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="1.2">ENTERPRISE AI</text>
+  <text x="108" y="220" fill="#A5F3FC" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="1.2">READINESS FRAMEWORK</text>
+  <text x="108" y="272" fill="#DDE7FF" font-family="Segoe UI, Arial, sans-serif" font-size="18" letter-spacing="1.5">DATA PRODUCTS • GOVERNANCE • FABRIC • AI STRATEGY</text>
+
+  <g>
+    <rect x="108" y="300" width="164" height="34" rx="17" fill="#0F172A" stroke="#8BB8FF" stroke-opacity="0.35"/>
+    <text x="134" y="323" fill="#8BB8FF" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" letter-spacing="1.4">AI READY</text>
+
+    <rect x="286" y="300" width="170" height="34" rx="17" fill="#0F172A" stroke="#7DD3FC" stroke-opacity="0.35"/>
+    <text x="311" y="323" fill="#7DD3FC" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" letter-spacing="1.2">TRUSTED DATA</text>
+  </g>
+
   <g opacity="0.2">
-    <circle cx="1100" cy="80" r="140" fill="#80C8FF"/>
-    <circle cx="230" cy="340" r="200" fill="#6C63FF"/>
-    <circle cx="1010" cy="370" r="180" fill="#20C997"/>
-  </g>
-
-  <g opacity="0.7">
-    <path d="M55 313C182 250 253 167 323 125C402 78 477 86 540 115C616 150 674 241 754 245C842 249 915 176 999 151C1081 127 1169 141 1229 190V420H55V313Z" fill="#0F1E38"/>
-  </g>
-
-  <g>
-    <rect x="45" y="60" width="250" height="250" rx="26" fill="#0F1E38" stroke="#7DD3FC" stroke-opacity="0.45"/>
-    <path d="M92 239L149 151L207 221L243 170L272 239H92Z" fill="url(#line1)" opacity="0.9"/>
-    <path d="M93 203L145 169L191 203L232 153L265 203H93Z" fill="#0B1020" opacity="0.48"/>
-    <circle cx="125" cy="137" r="12" fill="#6EE7F9"/>
-    <circle cx="197" cy="205" r="11" fill="#6C63FF"/>
-    <circle cx="244" cy="170" r="9" fill="#7DD3FC"/>
-  </g>
-
-  <g>
-    <path d="M392 98C478 87 566 92 648 123C729 154 804 214 865 237C937 264 1014 252 1097 205" stroke="url(#line2)" stroke-width="5" stroke-linecap="round"/>
-    <path d="M392 178C478 167 566 172 648 203C729 234 804 294 865 317C937 344 1014 332 1097 285" stroke="url(#line3)" stroke-width="5" stroke-linecap="round" opacity="0.8"/>
-    <circle cx="392" cy="98" r="9" fill="#5EEAD4"/>
-    <circle cx="648" cy="123" r="9" fill="#5EEAD4"/>
-    <circle cx="865" cy="237" r="9" fill="#60A5FA"/>
-    <circle cx="1097" cy="205" r="9" fill="#60A5FA"/>
-    <circle cx="392" cy="178" r="8" fill="#FFD166"/>
-    <circle cx="648" cy="203" r="8" fill="#FFD166"/>
-    <circle cx="865" cy="317" r="8" fill="#FF9F7A"/>
-    <circle cx="1097" cy="285" r="8" fill="#FF9F7A"/>
-  </g>
-
-  <g>
-    <text x="372" y="172" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">ENTERPRISE AI</text>
-    <text x="372" y="214" fill="#A5F3FC" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600">READINESS FRAMEWORK</text>
-    <text x="372" y="255" fill="#CBD5E1" font-family="Segoe UI, Arial, sans-serif" font-size="18" letter-spacing="1.2">Data Products • Governance • Fabric • Semantic Context • AI Strategy</text>
-  </g>
-
-  <g>
-    <rect x="372" y="285" width="188" height="42" rx="21" fill="#0F1E38" stroke="#7DD3FC" stroke-opacity="0.4"/>
-    <text x="395" y="312" fill="#7DD3FC" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700">AI READY</text>
-
-    <rect x="576" y="285" width="190" height="42" rx="21" fill="#0F1E38" stroke="#5EEAD4" stroke-opacity="0.4"/>
-    <text x="603" y="312" fill="#5EEAD4" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700">TRUSTED DATA</text>
+    <rect x="612" y="90" width="560" height="240" rx="34" fill="#0F172A" stroke="#E2E8F0" stroke-opacity="0.25"/>
+    <rect x="655" y="132" width="110" height="110" rx="16" fill="#93C5FD"/>
+    <rect x="785" y="132" width="110" height="110" rx="16" fill="#7DD3FC"/>
+    <rect x="915" y="132" width="110" height="110" rx="16" fill="#A5F3FC"/>
+    <rect x="1045" y="132" width="84" height="110" rx="16" fill="#C7D2FE"/>
   </g>
 </svg>
