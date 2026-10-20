@@ -9,7 +9,7 @@
 
   <rect width="1280" height="420" fill="url(#bg)"/>
 
-  <rect x="74" y="60" width="420" height="300" rx="28" fill="#0F172A" fill-opacity="0.28" stroke="#8BB8FF" stroke-opacity="0.28"/>
+  <rect x="74" y="60" width="800" height="300" rx="28" fill="#0F172A" fill-opacity="0.28" stroke="#8BB8FF" stroke-opacity="0.28"/>
 
   <text x="108" y="170" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="1.2">ENTERPRISE AI</text>
   <text x="108" y="220" fill="#A5F3FC" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="1.2">READINESS FRAMEWORK</text>
