@@ -2,27 +2,38 @@
 
 Trusted data foundations for enterprise AI, analytics, and business transformation.
 
-Data Products | Data Governance | Microsoft Fabric | Semantic Models | Knowledge Graphs | AI Strategy
+<p align="center">
+  <img src="https://img.shields.io/badge/Focus-Enterprise%20AI%20Readiness-0A84FF?style=for-the-badge" alt="Enterprise AI Readiness" />
+  <img src="https://img.shields.io/badge/Data%20Products-Operating%20Model-6C63FF?style=for-the-badge" alt="Data Products" />
+  <img src="https://img.shields.io/badge/Microsoft%20Fabric-Architecture-20C997?style=for-the-badge" alt="Microsoft Fabric" />
+  <img src="https://img.shields.io/badge/Governance-Trust-FFB84C?style=for-the-badge" alt="Governance" />
+</p>
+
+<p align="center">
+  <strong>Data Products | Data Governance | Microsoft Fabric | Semantic Models | Knowledge Graphs | AI Strategy</strong>
+</p>
 
 ---
 
 ## Overview
 
-This repository captures the frameworks, architecture patterns, and operating models I use to help organizations build trusted, AI-ready data foundations.
+This repository captures the frameworks, architecture patterns, and operating models used to help organizations build trusted, AI-ready data foundations.
 
-The focus is not on hype or tool-specific excitement. It is on the underlying capabilities that determine whether AI initiatives scale successfully:
+The focus is not technology hype. It is about the enterprise capabilities that decide whether AI initiatives actually scale and create value.
 
 - trusted data
 - clear ownership
 - governed operating models
 - shared business context
-- measurable value creation
+- measurable business outcomes
 
 ---
 
 ## Why this matters
 
-Most AI initiatives fail not because the technology is weak, but because the enterprise foundation is not ready. Common blockers include:
+Most AI programs stall not because the model is weak, but because the enterprise foundation is not ready.
+
+Common blockers include:
 
 - fragmented data foundations
 - unclear accountability and stewardship
@@ -31,29 +42,67 @@ Most AI initiatives fail not because the technology is weak, but because the ent
 - insufficient governance and trust
 - disconnected data products and operating models
 
-This repository is designed to address those gaps with practical, enterprise-oriented thinking.
+This repository is designed to address those issues with practical, enterprise-focused thinking.
 
 ---
 
-## Portfolio focus areas
+## What this repository covers
 
-### 1. AI Readiness
-Understand what it means for an organization to be ready for AI at scale and how to assess maturity across critical capability areas.
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <h3>📦 Data Products</h3>
+      <p>Treat data as a product with clear ownership, quality expectations, measurable value, and defined consumer needs.</p>
+    </td>
+    <td valign="top" width="50%">
+      <h3>🛡️ Data Governance</h3>
+      <p>Build stewardship, accountability, trust, quality controls, and policy alignment across the enterprise.</p>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top" width="50%">
+      <h3>☁️ Microsoft Fabric</h3>
+      <p>Use modern architecture patterns for analytics, engineering, warehousing, and AI enablement in a governed platform.</p>
+    </td>
+    <td valign="top" width="50%">
+      <h3>🧠 Semantic Models</h3>
+      <p>Create shared business meaning and improve how data is understood across technical and non-technical users.</p>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top" width="50%">
+      <h3>🕸️ Knowledge Graphs</h3>
+      <p>Connect entities, relationships, and context to improve discoverability and AI-powered interpretation.</p>
+    </td>
+    <td valign="top" width="50%">
+      <h3>🚀 AI Strategy</h3>
+      <p>Turn data foundations into sustainable AI adoption, business value, and transformation outcomes.</p>
+    </td>
+  </tr>
+</table>
 
-### 2. Data Product Operating Model
-Design scalable models for owning, governing, and delivering data as a product across the enterprise.
+---
 
-### 3. Data Governance
-Establish stewardship, accountability, policy alignment, and quality controls that make data dependable and trusted.
+## Architecture at a glance
 
-### 4. Microsoft Fabric Architecture
-Modernize analytics and data platforms with patterns that support governed, enterprise-scale transformation.
-
-### 5. Semantic Models and Knowledge Graphs
-Create business context, definitions, and relationships that improve discoverability, interoperability, and AI understanding.
-
-### 6. AI Strategy and Transformation
-Translate foundational data and governance work into business outcomes, operating leverage, and sustainable AI adoption.
+```text
+Business Outcomes
+        │
+        ▼
+AI & Analytics Adoption
+        │
+        ▼
+Semantic Layer + Knowledge Context
+        │
+        ▼
+Data Products + Governance
+        │
+        ▼
+Microsoft Fabric / Modern Data Platform
+        │
+        ▼
+Trusted Data Foundations
+```
 
 ---
 
@@ -75,43 +124,28 @@ enterprise-ai-readiness-framework/
 ├── diagrams/
 ├── presentations/
 ├── assets/
-└── templates/
+├── templates/
+└── case-studies/
 ```
 
 ---
 
-## Featured work
+## Featured work streams
 
 ### AI Readiness Playbook
-A practical view of what readiness means in enterprise environments and how to reason about the capabilities that matter most.
+A practical view of what readiness means in enterprise environments and how to assess maturity across critical capabilities.
 
 ### Data Product Operating Model
-Frameworks for scaling data ownership, quality, governance, and business value across distributed teams.
+Frameworks for scaling ownership, governance, stewardship, and measurable value across distributed teams.
 
 ### Governance Framework
-Principles and operating patterns for accountability, stewardship, trust, and decision rights.
+Principles and patterns for trust, accountability, and decision rights across complex data landscapes.
 
 ### Microsoft Fabric Reference Architecture
-Patterns for modern data and analytics platforms designed around enterprise AI readiness and governed transformation.
+Patterns for modern data and analytics platforms designed for scalable, governed transformation.
 
 ### Semantic Layer and Knowledge Graphs
-How context, relationships, and shared business meaning improve access, trust, and AI utility.
-
----
-
-## Use cases
-
-This repository is intended for:
-
-- enterprise data leaders
-- data platform teams
-- data product owners
-- governance and stewardship groups
-- analytics leaders
-- AI transformation teams
-- architecture and strategy stakeholders
-
-Whether you are building the foundations for enterprise AI, modernizing the analytics estate, or strengthening trust in data, this work is designed to help.
+How shared meaning, context, and connectivity improve discoverability and AI utility.
 
 ---
 
@@ -150,7 +184,7 @@ Whether you are building the foundations for enterprise AI, modernizing the anal
 
 Data Product Owner and Data Platform Leader with 18+ years of experience delivering enterprise-scale data, analytics, governance, and master data management solutions.
 
-I help organizations turn fragmented data into trusted products, platform capabilities, and strategic assets that enable analytics and AI adoption at scale.
+I help organizations transform fragmented data into trusted products, platform capabilities, and strategic assets that enable analytics and AI adoption at scale.
 
 #### Core strengths
 - Data Product Ownership
@@ -178,4 +212,6 @@ I help organizations turn fragmented data into trusted products, platform capabi
 
 ---
 
-This repository is a practical portfolio of enterprise architecture, operating model, and governance thinking for organizations building trusted, AI-ready data foundations.
+<p align="center">
+  <strong>This repository is a practical portfolio of enterprise architecture, operating model, and governance thinking for organizations building trusted, AI-ready data foundations.</strong>
+</p>
