@@ -1,12 +1,18 @@
 # Enterprise AI Readiness Framework
 
-Trusted data foundations for enterprise AI, analytics, and business transformation.
+<p align="center">
+  <img src="./assets/github-banner.svg" width="1280" alt="Enterprise AI Readiness Framework banner" />
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Focus-Enterprise%20AI%20Readiness-0A84FF?style=for-the-badge" alt="Enterprise AI Readiness" />
   <img src="https://img.shields.io/badge/Data%20Products-Operating%20Model-6C63FF?style=for-the-badge" alt="Data Products" />
   <img src="https://img.shields.io/badge/Microsoft%20Fabric-Architecture-20C997?style=for-the-badge" alt="Microsoft Fabric" />
   <img src="https://img.shields.io/badge/Governance-Trust-FFB84C?style=for-the-badge" alt="Governance" />
+</p>
+
+<p align="center">
+  <strong>Trusted data foundations for enterprise AI, analytics, and business transformation.</strong>
 </p>
 
 <p align="center">
