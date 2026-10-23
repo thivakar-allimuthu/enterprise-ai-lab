@@ -10,8 +10,8 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.2,
       "position": [
-        -736,
-        -144
+        -912,
+        -320
       ],
       "id": "0e382dc1-17de-47de-80d2-d947907bef3d",
       "name": "Webhook",
@@ -44,8 +44,8 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
       "typeVersion": 1,
       "position": [
-        -240,
-        64
+        -416,
+        -112
       ],
       "id": "b8e00fd3-b059-4128-9ef2-6fa9f64388b2",
       "name": "Ollama Chat Model",
@@ -63,8 +63,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -480,
-        -144
+        -656,
+        -320
       ],
       "id": "ea3ea7b6-1f30-4967-8d81-d35044f16860",
       "name": "Code in JavaScript"
@@ -81,8 +81,8 @@
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
       "position": [
-        -240,
-        -144
+        -416,
+        -320
       ],
       "id": "1f17d870-5eb8-4e9b-8667-2c79a2eba9d8",
       "name": "Basic LLM Chain",
@@ -103,15 +103,15 @@
           "cachedResultName": "enterprise-ai-readiness-framework",
           "cachedResultUrl": "https://github.com/thivakar-allimuthu/enterprise-ai-readiness-framework"
         },
-        "filePath": "=case-studies/markdown_strategy_{{ $now.toFormat('yyyy-MM-dd_HH-mm-ss') }}.md",
+        "filePath": "=case-studies/Autonomous-Pricing-Markdown/markdown_strategy_{{ $now.toFormat('yyyy-MM-dd_HH-mm-ss') }}.md",
         "fileContent": "={{ $json.text }}",
         "commitMessage": "feat: automated retail markdown strategy update [ci skip]"
       },
       "type": "n8n-nodes-base.github",
       "typeVersion": 1.1,
       "position": [
-        176,
-        48
+        0,
+        -128
       ],
       "id": "db40c83a-35cd-4b2f-a0b0-f99d754cf03b",
       "name": "Create a file",
@@ -149,8 +149,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        160,
-        -144
+        -16,
+        -320
       ],
       "id": "579109b8-7f09-430a-975e-1d81d81ca357",
       "name": "Code in JavaScript1"
@@ -266,7 +266,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "8a80df35-2bbd-4cfd-8577-313e82ac7af9",
+  "versionId": "dfb4512e-3bf3-46ae-91d6-27ace6d2ee2e",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "d14b97bea6c3478afeea260c2fa977025c12c6be3a895a942f146e7cd4435d28"
