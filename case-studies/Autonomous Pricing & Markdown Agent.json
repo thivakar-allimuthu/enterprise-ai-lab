@@ -1,0 +1,277 @@
+{
+  "name": "Autonomous Pricing & Markdown Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "61f27db4-c085-4304-9bf8-67be1f41c24f",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -736,
+        -144
+      ],
+      "id": "0e382dc1-17de-47de-80d2-d947907bef3d",
+      "name": "Webhook",
+      "webhookId": "61f27db4-c085-4304-9bf8-67be1f41c24f"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Here is the exact pre-calculated inventory data:\n\n{{ $json.formatted_inventory }}\n\nGenerate the Markdown report using ONLY these exact items and numbers.",
+        "options": {
+          "systemMessage": "You are a Retail Pricing Report Generator.\n1. Use ONLY the exact SKUs, Product Names, and prices provided in the user message. \n2. Do NOT invent items, change product names, or alter numbers.\n3. Format the output as a clean Markdown report with an Executive Summary, Pricing Action Table, and Total Capital Recoverable Estimate.\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -656,
+        -592
+      ],
+      "id": "4dac130d-0ba8-4b8b-8148-b87ec622c6df",
+      "name": "AI Agent",
+      "executeOnce": true,
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        64
+      ],
+      "id": "b8e00fd3-b059-4128-9ef2-6fa9f64388b2",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "Ssub6MSih4sYL0y1",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const skus = [];\nconst currentPrices = [];\nconst recommendedPrices = [];\n\nconst formattedList = $input.all().map(item => {\n  const data = item.json;\n  const minFloor = data.cost_price_sek * 1.15;\n  let targetPrice = data.current_price_sek;\n\n  if (data.competitor_price_sek < data.current_price_sek) {\n    const undercut = data.competitor_price_sek * 0.98;\n    targetPrice = Math.max(undercut, minFloor);\n  }\n\n  const roundedTarget = Math.round(targetPrice);\n  const markdownPct = ((data.current_price_sek - targetPrice) / data.current_price_sek) * 100;\n  const profitMarginPct = ((targetPrice - data.cost_price_sek) / targetPrice) * 100;\n\n  skus.push(data.sku);\n  currentPrices.push(data.current_price_sek);\n  recommendedPrices.push(roundedTarget);\n\n  return `- SKU: ${data.sku} | Name: ${data.product_name} | Current: ${data.current_price_sek} SEK | Recommended: ${roundedTarget} SEK | Markdown: ${markdownPct.toFixed(1)}% | Margin: ${profitMarginPct.toFixed(1)}%`;\n}).join('\\n');\n\n// Build QuickChart configuration object\nconst chartConfig = {\n  type: 'bar',\n  data: {\n    labels: skus,\n    datasets: [\n      { label: 'Current Price (SEK)', data: currentPrices },\n      { label: 'Recommended Price (SEK)', data: recommendedPrices }\n    ]\n  }\n};\n\n// Encode JSON to Base64 to make it 100% safe for standard Markdown links\nconst jsonString = JSON.stringify(chartConfig);\nconst base64Config = Buffer.from(jsonString).toString('base64');\nconst chartImageMarkdown = `![Pricing Chart](https://quickchart.io/chart?w=700&h=350&encoding=base64&c=${base64Config})`;\n\nreturn [{\n  json: {\n    formatted_inventory: formattedList,\n    chart_image: chartImageMarkdown\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        -144
+      ],
+      "id": "ea3ea7b6-1f30-4967-8d81-d35044f16860",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a retail pricing analyst. Create an executive report based on this inventory:\n\n{{ $json.formatted_inventory }}\n\nREQUIRED SECTIONS:\n1. Executive Summary\n2. Pricing Action Table\n3. Total Capital Recoverable Estimate\n\nSTRICT RULES:\n- Output ONLY the Markdown narrative text for sections 1 to 3.\n- Do NOT output any charts or code blocks.\n- Do NOT add disclaimers or conversational notes.\n",
+        "messages": {
+          "messageValues": []
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -240,
+        -144
+      ],
+      "id": "1f17d870-5eb8-4e9b-8667-2c79a2eba9d8",
+      "name": "Basic LLM Chain",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "owner": {
+          "__rl": true,
+          "value": "thivakar-allimuthu",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "enterprise-ai-readiness-framework",
+          "mode": "list",
+          "cachedResultName": "enterprise-ai-readiness-framework",
+          "cachedResultUrl": "https://github.com/thivakar-allimuthu/enterprise-ai-readiness-framework"
+        },
+        "filePath": "=case-studies/markdown_strategy_{{ $now.toFormat('yyyy-MM-dd_HH-mm-ss') }}.md",
+        "fileContent": "={{ $json.text }}",
+        "commitMessage": "feat: automated retail markdown strategy update [ci skip]"
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        176,
+        48
+      ],
+      "id": "db40c83a-35cd-4b2f-a0b0-f99d754cf03b",
+      "name": "Create a file",
+      "webhookId": "bd1fb6f8-e78e-4dd9-92b9-bf79e97455f4",
+      "credentials": {
+        "githubApi": {
+          "id": "lEv5JOOF3S9PorI3",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://webhook.site/62822b40-1ad8-42de-94f2-816e24a3feb2",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"pipeline\": \"retail-markdown-optimization\",\n  \"timestamp\": \"{{ $now.toISO() }}\",\n  \"data\": \"{{ $json }}\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -896,
+        -592
+      ],
+      "id": "8fd6a170-2ed2-4a9c-b890-27e73312a02e",
+      "name": "HTTP Request",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const narrative = $json.text || \"\";\nconst chart = $(\"Code in JavaScript\").item.json.chart_image;\n\nconst fullReport = `${narrative.trim()}\\n\\n## Visual Chart\\n\\n${chart}`;\n\nreturn {\n  text: fullReport\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -144
+      ],
+      "id": "579109b8-7f09-430a-975e-1d81d81ca357",
+      "name": "Code in JavaScript1"
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "sku": "SKU-4089",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "category": "Electronics",
+          "cost_price_sek": 1200,
+          "current_price_sek": 2499,
+          "competitor_price_sek": 2199,
+          "days_in_stock": 78,
+          "units_in_stock": 140,
+          "sales_velocity_30d": 2
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-9912",
+          "product_name": "Ergonomic Mesh Office Chair",
+          "category": "Furniture",
+          "cost_price_sek": 1800,
+          "current_price_sek": 4500,
+          "competitor_price_sek": 4200,
+          "days_in_stock": 115,
+          "units_in_stock": 85,
+          "sales_velocity_30d": 1
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1043",
+          "product_name": "Waterproof Trail Backpack 30L",
+          "category": "Outdoor",
+          "cost_price_sek": 350,
+          "current_price_sek": 899,
+          "competitor_price_sek": 849,
+          "days_in_stock": 92,
+          "units_in_stock": 210,
+          "sales_velocity_30d": 4
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        []
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Create a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "8a80df35-2bbd-4cfd-8577-313e82ac7af9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d14b97bea6c3478afeea260c2fa977025c12c6be3a895a942f146e7cd4435d28"
+  },
+  "nodeGroups": [],
+  "id": "LgSQdIMrLw8hwUC5",
+  "tags": []
+}
