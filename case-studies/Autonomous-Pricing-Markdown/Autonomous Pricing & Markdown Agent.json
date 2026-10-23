@@ -10,31 +10,12 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.2,
       "position": [
-        -912,
-        -320
+        -1584,
+        -640
       ],
       "id": "0e382dc1-17de-47de-80d2-d947907bef3d",
       "name": "Webhook",
       "webhookId": "61f27db4-c085-4304-9bf8-67be1f41c24f"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "Here is the exact pre-calculated inventory data:\n\n{{ $json.formatted_inventory }}\n\nGenerate the Markdown report using ONLY these exact items and numbers.",
-        "options": {
-          "systemMessage": "You are a Retail Pricing Report Generator.\n1. Use ONLY the exact SKUs, Product Names, and prices provided in the user message. \n2. Do NOT invent items, change product names, or alter numbers.\n3. Format the output as a clean Markdown report with an Executive Summary, Pricing Action Table, and Total Capital Recoverable Estimate.\n"
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 3.1,
-      "position": [
-        -656,
-        -592
-      ],
-      "id": "4dac130d-0ba8-4b8b-8148-b87ec622c6df",
-      "name": "AI Agent",
-      "executeOnce": true,
-      "disabled": true
     },
     {
       "parameters": {
@@ -44,8 +25,8 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
       "typeVersion": 1,
       "position": [
-        -416,
-        -112
+        -592,
+        -448
       ],
       "id": "b8e00fd3-b059-4128-9ef2-6fa9f64388b2",
       "name": "Ollama Chat Model",
@@ -58,21 +39,8 @@
     },
     {
       "parameters": {
-        "jsCode": "const skus = [];\nconst currentPrices = [];\nconst recommendedPrices = [];\n\nconst formattedList = $input.all().map(item => {\n  const data = item.json;\n  const minFloor = data.cost_price_sek * 1.15;\n  let targetPrice = data.current_price_sek;\n\n  if (data.competitor_price_sek < data.current_price_sek) {\n    const undercut = data.competitor_price_sek * 0.98;\n    targetPrice = Math.max(undercut, minFloor);\n  }\n\n  const roundedTarget = Math.round(targetPrice);\n  const markdownPct = ((data.current_price_sek - targetPrice) / data.current_price_sek) * 100;\n  const profitMarginPct = ((targetPrice - data.cost_price_sek) / targetPrice) * 100;\n\n  skus.push(data.sku);\n  currentPrices.push(data.current_price_sek);\n  recommendedPrices.push(roundedTarget);\n\n  return `- SKU: ${data.sku} | Name: ${data.product_name} | Current: ${data.current_price_sek} SEK | Recommended: ${roundedTarget} SEK | Markdown: ${markdownPct.toFixed(1)}% | Margin: ${profitMarginPct.toFixed(1)}%`;\n}).join('\\n');\n\n// Build QuickChart configuration object\nconst chartConfig = {\n  type: 'bar',\n  data: {\n    labels: skus,\n    datasets: [\n      { label: 'Current Price (SEK)', data: currentPrices },\n      { label: 'Recommended Price (SEK)', data: recommendedPrices }\n    ]\n  }\n};\n\n// Encode JSON to Base64 to make it 100% safe for standard Markdown links\nconst jsonString = JSON.stringify(chartConfig);\nconst base64Config = Buffer.from(jsonString).toString('base64');\nconst chartImageMarkdown = `![Pricing Chart](https://quickchart.io/chart?w=700&h=350&encoding=base64&c=${base64Config})`;\n\nreturn [{\n  json: {\n    formatted_inventory: formattedList,\n    chart_image: chartImageMarkdown\n  }\n}];\n"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -656,
-        -320
-      ],
-      "id": "ea3ea7b6-1f30-4967-8d81-d35044f16860",
-      "name": "Code in JavaScript"
-    },
-    {
-      "parameters": {
         "promptType": "define",
-        "text": "=You are a retail pricing analyst. Create an executive report based on this inventory:\n\n{{ $json.formatted_inventory }}\n\nREQUIRED SECTIONS:\n1. Executive Summary\n2. Pricing Action Table\n3. Total Capital Recoverable Estimate\n\nSTRICT RULES:\n- Output ONLY the Markdown narrative text for sections 1 to 3.\n- Do NOT output any charts or code blocks.\n- Do NOT add disclaimers or conversational notes.\n",
+        "text": "==You are a retail pricing analyst writing for an executive audience.\n\nWrite the EXECUTIVE SUMMARY only, as 4 to 6 sentences of plain prose, using ONLY the facts below.\n\n{{ $json.facts_for_llm }}\n\nSTRICT RULES:\n- Use only the numbers, SKUs and product names that appear in the facts. Do not calculate or estimate anything new.\n- Do not write headings, tables, bullet lists, charts or code blocks.\n- Do not add disclaimers, greetings or notes about yourself.\n- All amounts are in SEK.\n",
         "messages": {
           "messageValues": []
         },
@@ -81,8 +49,8 @@
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
       "position": [
-        -416,
-        -320
+        -592,
+        -656
       ],
       "id": "1f17d870-5eb8-4e9b-8667-2c79a2eba9d8",
       "name": "Basic LLM Chain",
@@ -110,8 +78,8 @@
       "type": "n8n-nodes-base.github",
       "typeVersion": 1.1,
       "position": [
-        0,
-        -128
+        -176,
+        -464
       ],
       "id": "db40c83a-35cd-4b2f-a0b0-f99d754cf03b",
       "name": "Create a file",
@@ -125,35 +93,86 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://webhook.site/62822b40-1ad8-42de-94f2-816e24a3feb2",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"pipeline\": \"retail-markdown-optimization\",\n  \"timestamp\": \"{{ $now.toISO() }}\",\n  \"data\": \"{{ $json }}\"\n}\n",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.5,
-      "position": [
-        -896,
-        -592
-      ],
-      "id": "8fd6a170-2ed2-4a9c-b890-27e73312a02e",
-      "name": "HTTP Request",
-      "disabled": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const narrative = $json.text || \"\";\nconst chart = $(\"Code in JavaScript\").item.json.chart_image;\n\nconst fullReport = `${narrative.trim()}\\n\\n## Visual Chart\\n\\n${chart}`;\n\nreturn {\n  text: fullReport\n};\n"
+        "jsCode": "// ============================================================\n// STEP 1: Input validation & normalisation\n// n8n Code node  |  Mode: \"Run Once for All Items\"\n// Place directly after the Webhook node.\n// ============================================================\n\nconst CONFIG = {\n  GTIN_REQUIRED: false,            // true = missing GTIN becomes an error instead of a warning\n  MAX_DAYS_IN_STOCK_WARN: 730,     // warn when stock is older than ~2 years\n  COMPETITOR_OUTLIER_LOW: 0.5,     // competitor < 50% of our price  -> warning\n  COMPETITOR_OUTLIER_HIGH: 2.0,    // competitor > 200% of our price -> warning\n};\n\n// ---------- 1. Unwrap webhook body (array or single object) ----------\nconst rows = [];\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  if (j.body !== undefined && j.body !== null && typeof j.body === 'object') {\n    rows.push(...(Array.isArray(j.body) ? j.body : [j.body]));\n  } else {\n    rows.push(j);\n  }\n}\n\n// ---------- 2. Helpers ----------\nconst toNum = (v) => {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;\n  if (typeof v === 'string' && v.trim() !== '') return Number(v.trim().replace(',', '.'));\n  return NaN;\n};\nconst orNull = (n) => (Number.isNaN(n) ? null : n);\nconst median = (arr) => {\n  if (!arr.length) return null;\n  const s = [...arr].sort((a, b) => a - b);\n  const m = Math.floor(s.length / 2);\n  return s.length % 2 ? s[m] : Math.round(((s[m - 1] + s[m]) / 2) * 100) / 100;\n};\n\n// GS1 check-digit validation (GTIN-8, 12, 13, 14)\nconst gtinValid = (g) => {\n  if (!/^(\\d{8}|\\d{12,14})$/.test(g)) return false;\n  const d = g.split('').map(Number);\n  const check = d.pop();\n  let sum = 0;\n  d.reverse().forEach((n, i) => { sum += n * (i % 2 === 0 ? 3 : 1); });\n  return (10 - (sum % 10)) % 10 === check;\n};\n\n// ---------- 3. Validate each row ----------\nconst seenSkus = new Set();\n\nconst results = rows.map((row, idx) => {\n  row = row && typeof row === 'object' ? row : {};\n  const errors = [];\n  const warnings = [];\n\n  const str = (k) => (row[k] === undefined || row[k] === null ? '' : String(row[k]).trim());\n\n  // --- text fields ---\n  const sku = str('sku');\n  const productName = str('product_name');\n  const department = str('department');\n  const category = str('category');\n  const gtin = str('gtin');\n\n  if (!sku) errors.push('Missing sku');\n  if (!productName) errors.push('Missing product_name');\n  if (!department) errors.push('Missing department');\n  if (!category) errors.push('Missing category');\n\n  if (sku) {\n    if (seenSkus.has(sku)) errors.push(`Duplicate sku: ${sku}`);\n    seenSkus.add(sku);\n  }\n\n  if (!gtin) {\n    (CONFIG.GTIN_REQUIRED ? errors : warnings).push('Missing GTIN');\n  } else if (!gtinValid(gtin)) {\n    errors.push(`Invalid GTIN (format or GS1 check digit): ${gtin}`);\n  }\n\n  // --- numeric fields ---\n  const cost = toNum(row.cost_price_sek);\n  const price = toNum(row.current_price_sek);\n  const daysInStock = toNum(row.days_in_stock);\n  const units = toNum(row.units_in_stock);\n  const velocity = toNum(row.sales_velocity_30d);\n  const sinceChange = row.days_since_last_price_change === undefined\n    ? NaN : toNum(row.days_since_last_price_change);\n\n  if (!(cost > 0)) errors.push('cost_price_sek must be a number > 0');\n  if (!(price > 0)) errors.push('current_price_sek must be a number > 0');\n  if (!(daysInStock >= 0)) errors.push('days_in_stock must be a number >= 0');\n  if (!(units >= 0) || !Number.isInteger(units)) errors.push('units_in_stock must be a whole number >= 0');\n  if (!(velocity >= 0)) errors.push('sales_velocity_30d must be a number >= 0');\n  if (row.days_since_last_price_change !== undefined && !(sinceChange >= 0)) {\n    errors.push('days_since_last_price_change must be a number >= 0');\n  }\n\n  // --- competitor prices (new array field, legacy single field still accepted) ---\n  let rawComps = row.competitor_prices_sek;\n  if (rawComps === undefined && row.competitor_price_sek !== undefined) rawComps = [row.competitor_price_sek];\n  if (rawComps === undefined || rawComps === null) rawComps = [];\n\n  let comps = [];\n  if (!Array.isArray(rawComps)) {\n    errors.push('competitor_prices_sek must be an array of numbers');\n  } else {\n    comps = rawComps.map(toNum);\n    if (comps.some((c) => !(c > 0))) {\n      errors.push('competitor_prices_sek contains a non-numeric or non-positive value');\n      comps = comps.filter((c) => c > 0);\n    }\n  }\n\n  // --- business-sanity warnings (row still passes) ---\n  if (price > 0 && cost > 0 && price < cost) {\n    warnings.push('Current price is below cost (negative margin)');\n  }\n  if (!comps.length && !errors.some((e) => e.startsWith('competitor_prices_sek'))) {\n    warnings.push('No competitor prices available: competitor-based pricing skipped');\n  }\n  if (price > 0 && comps.some((c) => c < price * CONFIG.COMPETITOR_OUTLIER_LOW || c > price * CONFIG.COMPETITOR_OUTLIER_HIGH)) {\n    warnings.push('Competitor price looks like an outlier compared with our price');\n  }\n  if (daysInStock > CONFIG.MAX_DAYS_IN_STOCK_WARN) {\n    warnings.push(`days_in_stock above ${CONFIG.MAX_DAYS_IN_STOCK_WARN}`);\n  }\n\n  // ---------- 4. Build normalised output ----------\n  const compMin = comps.length ? Math.min(...comps) : null;\n  const valid = errors.length === 0;\n\n  const out = {\n    row_number: idx + 1,\n    validation_status: valid ? 'valid' : 'rejected',\n    validation_errors: errors,\n    validation_warnings: warnings,\n\n    sku,\n    gtin: gtin || null,\n    product_name: productName,\n    brand: str('brand') || null,\n    department,\n    category,\n    subcategory: str('subcategory') || null,\n    supplier: str('supplier') || null,\n\n    cost_price_sek: orNull(cost),\n    current_price_sek: orNull(price),\n    days_in_stock: orNull(daysInStock),\n    units_in_stock: orNull(units),\n    sales_velocity_30d: orNull(velocity),\n    days_since_last_price_change: orNull(sinceChange),\n\n    competitor_prices_sek: comps,\n    competitor_count: comps.length,\n    competitor_min_sek: compMin,\n    competitor_median_sek: median(comps),\n    competitor_max_sek: comps.length ? Math.max(...comps) : null,\n\n    // Backward compatibility: the current pricing node still reads this single field.\n    // When no competitor data exists, fall back to our own price so the price is held.\n    competitor_price_sek: compMin !== null ? compMin : orNull(price),\n  };\n\n  if (!valid) out.raw_input = row;   // keep original data for review\n\n  return { json: out };\n});\n\nreturn results;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -16,
-        -320
+        -1376,
+        -640
+      ],
+      "id": "c42feb29-cf55-4273-8afe-b0ef7b233875",
+      "name": "Validate & Normalise"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0002-4000-8000-000000000002",
+              "leftValue": "={{ $json.validation_status }}",
+              "rightValue": "valid",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1120,
+        -640
+      ],
+      "id": "3986abab-7700-4a63-8753-a0f2391834d2",
+      "name": "Valid rows?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        -464
+      ],
+      "id": "1c274ba2-2f7a-4bc3-b33d-b177962af7bd",
+      "name": "Rejected rows"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 2: Pricing engine v2\n// n8n Code node (replaces \"Code in JavaScript\")  |  Mode: \"Run Once for All Items\"\n// Input : valid rows from \"Valid rows?\" (output of Step 1)\n// Output: ONE item with the per-SKU decisions, the report table,\n//         the capital estimate, the chart link and a facts block for the LLM.\n// ============================================================\n\nconst CONFIG = {\n  // Minimum markup over cost, by department (price floor = cost x (1 + markup))\n  MIN_MARKUP_BY_DEPARTMENT: { Electronics: 0.10, Furniture: 0.25, Outdoor: 0.20, Home: 0.20, Sports: 0.20 },\n  DEFAULT_MIN_MARKUP: 0.15,\n\n  COMPETITOR_UNDERCUT: 0.02,          // undercut the cheapest credible competitor by 2%\n  COMPETITOR_OUTLIER_LOW: 0.5,        // competitor prices below 50% of our price are ignored as outliers\n\n  MAX_MARKDOWN_PER_RUN: 0.25,         // no price falls more than 25% in one run\n  MAX_STOCK_PRESSURE_DEPTH: 0.30,     // age + cover markdown depth is capped at 30%\n  MIN_MARKDOWN_PCT_TO_ACT: 1,         // ignore changes smaller than 1%\n  PRICE_CHANGE_COOLDOWN_DAYS: 14,     // do not touch a price changed less than 14 days ago\n\n  FAST_MOVER_MAX_COVER_WEEKS: 8,      // fast mover = <= 8 weeks of cover ...\n  FAST_MOVER_MAX_AGE_DAYS: 60,        // ... and <= 60 days in stock\n\n  CLEARANCE_MIN_AGE_DAYS: 120,        // clearance = >= 120 days in stock ...\n  CLEARANCE_MIN_COVER_WEEKS: 26,      // ... and >= 26 weeks of cover\n\n  APPROVAL_THRESHOLD_PCT: 15,         // markdowns >= 15% are flagged for human approval\n\n  // Markdown depth by days in stock\n  AGE_TIERS: [\n    { max: 30, depth: 0 }, { max: 60, depth: 0.03 }, { max: 90, depth: 0.08 },\n    { max: 120, depth: 0.15 }, { max: Infinity, depth: 0.25 },\n  ],\n  // Markdown depth by weeks of cover (stock on hand / weekly sales rate)\n  COVER_TIERS: [\n    { max: 8, depth: 0 }, { max: 13, depth: 0.03 }, { max: 26, depth: 0.06 },\n    { max: 52, depth: 0.12 }, { max: Infinity, depth: 0.20 },\n  ],\n};\n\n// ---------- helpers ----------\nconst items = $input.all().map((i) => i.json);\nconst round2 = (n) => Math.round(n * 100) / 100;\nconst pct1 = (n) => Math.round(n * 10) / 10;\nconst tier = (tiers, v) => tiers.find((t) => v <= t.max).depth;\nconst roundUp9 = (x) => Math.ceil((x + 1) / 10) * 10 - 1;   // next price ending in 9 (never below x)\nconst sek = (n) => Math.round(n).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\nconst clean = (s) => String(s).replace(/\\|/g, '/');\n\n// ---------- decision per SKU ----------\nconst results = items.map((d) => {\n  const price = d.current_price_sek;\n  const cost = d.cost_price_sek;\n  const units = d.units_in_stock ?? 0;\n  const velocity = d.sales_velocity_30d ?? 0;\n  const days = d.days_in_stock ?? 0;\n  const since = d.days_since_last_price_change;\n\n  const markup = CONFIG.MIN_MARKUP_BY_DEPARTMENT[d.department] ?? CONFIG.DEFAULT_MIN_MARKUP;\n  const floor = round2(cost * (1 + markup));\n\n  const weeklyRate = (velocity * 7) / 30;\n  const cover = weeklyRate > 0 ? Math.min(units / weeklyRate, 999) : (units > 0 ? 999 : 0);\n\n  const comps = Array.isArray(d.competitor_prices_sek) && d.competitor_prices_sek.length\n    ? d.competitor_prices_sek\n    : (d.competitor_price_sek ? [d.competitor_price_sek] : []);\n  const credible = comps.filter((c) => c >= price * CONFIG.COMPETITOR_OUTLIER_LOW);\n  const compRef = credible.length ? Math.min(...credible) : null;\n\n  let action = 'HOLD';\n  let rec = price;\n  const reasons = [];\n  let ageDepth = 0, coverDepth = 0, depth = 0;\n\n  if (units === 0) {\n    reasons.push('No stock on hand');\n  } else if (price < floor) {\n    action = 'REVIEW';\n    reasons.push(`Current price is below the margin floor (${sek(floor)} SEK)`);\n  } else if (since !== null && since !== undefined && since < CONFIG.PRICE_CHANGE_COOLDOWN_DAYS) {\n    reasons.push(`Price changed ${since} days ago (cooldown ${CONFIG.PRICE_CHANGE_COOLDOWN_DAYS} days)`);\n  } else if (cover <= CONFIG.FAST_MOVER_MAX_COVER_WEEKS && days <= CONFIG.FAST_MOVER_MAX_AGE_DAYS) {\n    reasons.push(`Fast mover: ${cover.toFixed(1)} weeks of cover, ${days} days in stock`);\n  } else {\n    ageDepth = tier(CONFIG.AGE_TIERS, days);\n    coverDepth = tier(CONFIG.COVER_TIERS, cover);\n    depth = Math.min(ageDepth + coverDepth, CONFIG.MAX_STOCK_PRESSURE_DEPTH);\n\n    const stockPrice = price * (1 - depth);\n    const compPrice = compRef !== null && compRef < price ? compRef * (1 - CONFIG.COMPETITOR_UNDERCUT) : price;\n    const raw = Math.min(stockPrice, compPrice);\n    const capPrice = price * (1 - CONFIG.MAX_MARKDOWN_PER_RUN);\n\n    const target = Math.max(raw, capPrice, floor);\n    rec = Math.min(roundUp9(target), price);\n    let md = ((price - rec) / price) * 100;\n\n    if (md < CONFIG.MIN_MARKDOWN_PCT_TO_ACT) {\n      rec = price;\n      reasons.push('Calculated change below the minimum step: price held');\n    } else {\n      if (compPrice < price) reasons.push(`Cheapest credible competitor ${sek(compRef)} SEK`);\n      if (depth > 0) reasons.push(`Stock pressure ${pct1(depth * 100)}% (${days} days in stock, ${cover >= 999 ? 'no recent sales' : cover.toFixed(1) + ' weeks of cover'})`);\n      if (capPrice > raw && capPrice >= floor) reasons.push(`Capped at ${CONFIG.MAX_MARKDOWN_PER_RUN * 100}% max markdown per run`);\n      if (floor > raw && floor >= capPrice) reasons.push(`Limited by margin floor (${sek(floor)} SEK)`);\n      const clearance = days >= CONFIG.CLEARANCE_MIN_AGE_DAYS && cover >= CONFIG.CLEARANCE_MIN_COVER_WEEKS;\n      action = clearance ? 'CLEARANCE' : 'MARKDOWN';\n    }\n  }\n\n  const markdownPct = ((price - rec) / price) * 100;\n  const marginPct = ((rec - cost) / rec) * 100;\n\n  return {\n    sku: d.sku, gtin: d.gtin, product_name: d.product_name, department: d.department, category: d.category,\n    action,\n    current_price_sek: price,\n    recommended_price_sek: rec,\n    markdown_percent: pct1(markdownPct),\n    profit_margin_percent: pct1(marginPct),\n    cost_price_sek: cost,\n    margin_floor_sek: floor,\n    units_in_stock: units,\n    days_in_stock: days,\n    weeks_of_cover: cover >= 999 ? null : pct1(cover),\n    age_depth_pct: pct1(ageDepth * 100),\n    cover_depth_pct: pct1(coverDepth * 100),\n    approval_required: markdownPct >= CONFIG.APPROVAL_THRESHOLD_PCT,\n    reasons,\n  };\n});\n\n// ---------- aggregates (all deterministic) ----------\nconst changed = results.filter((r) => r.action === 'MARKDOWN' || r.action === 'CLEARANCE');\nconst count = (a) => results.filter((r) => r.action === a).length;\nconst sum = (arr, f) => arr.reduce((s, r) => s + f(r), 0);\n\nconst capitalTiedAtCost = sum(changed, (r) => r.units_in_stock * r.cost_price_sek);\nconst recoverable = sum(changed, (r) => r.units_in_stock * r.recommended_price_sek);\nconst revenueGivenUp = sum(changed, (r) => r.units_in_stock * (r.current_price_sek - r.recommended_price_sek));\nconst marginAtRecommended = sum(changed, (r) => r.units_in_stock * (r.recommended_price_sek - r.cost_price_sek));\nconst avgMarkdown = changed.length ? sum(changed, (r) => r.markdown_percent) / changed.length : 0;\nconst top = [...changed].sort((a, b) => b.markdown_percent - a.markdown_percent).slice(0, 3);\nconst approvals = results.filter((r) => r.approval_required).map((r) => r.sku);\nconst reviews = results.filter((r) => r.action === 'REVIEW');\nconst fastMovers = results.filter((r) => r.reasons.some((x) => x.startsWith('Fast mover'))).map((r) => r.sku);\n\n// ---------- facts block for the LLM ----------\nconst facts = [\n  'RUN FACTS (all amounts in SEK):',\n  `- SKUs analysed: ${results.length}`,\n  `- Actions: ${count('HOLD')} HOLD, ${count('MARKDOWN')} MARKDOWN, ${count('CLEARANCE')} CLEARANCE, ${count('REVIEW')} REVIEW`,\n  ...top.map((r, i) => `- Markdown #${i + 1}: ${r.sku} ${r.product_name}, ${r.markdown_percent}% (${sek(r.current_price_sek)} to ${sek(r.recommended_price_sek)})`),\n  `- Average markdown across marked-down SKUs: ${pct1(avgMarkdown)}%`,\n  `- Capital tied up at cost in marked-down stock: ${sek(capitalTiedAtCost)}`,\n  `- Total Capital Recoverable Estimate (cash if that stock sells at recommended prices): ${sek(recoverable)}`,\n  `- Revenue given up versus current prices: ${sek(revenueGivenUp)}`,\n  `- SKUs needing approval (markdown of ${CONFIG.APPROVAL_THRESHOLD_PCT}% or more): ${approvals.length ? approvals.join(', ') : 'none'}`,\n  `- SKUs flagged for review: ${reviews.length ? reviews.map((r) => `${r.sku} (${r.reasons[0]})`).join('; ') : 'none'}`,\n  `- Fast movers held at current price: ${fastMovers.length ? fastMovers.join(', ') : 'none'}`,\n].join('\\n');\n\n// ---------- Markdown: pricing action table ----------\nconst sorted = [...results].sort((a, b) => b.markdown_percent - a.markdown_percent || a.sku.localeCompare(b.sku));\nconst tableRows = sorted.map((r) =>\n  `| ${r.sku} | ${clean(r.product_name)} | ${r.action}${r.approval_required ? ' ⚠️' : ''} | ${sek(r.current_price_sek)} | ${sek(r.recommended_price_sek)} | ${r.markdown_percent}% | ${r.profit_margin_percent}% | ${r.weeks_of_cover === null ? 'no sales' : r.weeks_of_cover} | ${r.days_in_stock} | ${clean(r.reasons.join('; '))} |`\n);\nconst pricingTable = [\n  '| SKU | Product | Action | Current (SEK) | Recommended (SEK) | Markdown | Margin | Cover (weeks) | Days in stock | Why |',\n  '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',\n  ...tableRows,\n  '',\n  `⚠️ = markdown of ${CONFIG.APPROVAL_THRESHOLD_PCT}% or more, recommended for human approval before the price is changed.`,\n].join('\\n');\n\n// ---------- Markdown: capital section ----------\nconst capitalSection = [\n  `**Total Capital Recoverable Estimate: ${sek(recoverable)} SEK**`,\n  '',\n  `Cash recovered if all stock in the ${changed.length} marked-down SKUs sells at the recommended prices.`,\n  '',\n  '| Metric | SEK |',\n  '| --- | ---: |',\n  `| Capital tied up at cost (marked-down SKUs) | ${sek(capitalTiedAtCost)} |`,\n  `| Cash recoverable at recommended prices | ${sek(recoverable)} |`,\n  `| Margin earned at recommended prices | ${sek(marginAtRecommended)} |`,\n  `| Revenue given up versus current prices | ${sek(revenueGivenUp)} |`,\n  '',\n  '_Assumes all units sell; it is not time-adjusted for sales velocity._',\n].join('\\n');\n\n// ---------- chart ----------\nconst chartConfig = {\n  type: 'bar',\n  data: {\n    labels: results.map((r) => r.sku),\n    datasets: [\n      { label: 'Current Price (SEK)', data: results.map((r) => r.current_price_sek) },\n      { label: 'Recommended Price (SEK)', data: results.map((r) => r.recommended_price_sek) },\n    ],\n  },\n};\nconst base64Config = Buffer.from(JSON.stringify(chartConfig)).toString('base64');\nconst chartImage = `![Pricing Chart](https://quickchart.io/chart?w=900&h=400&encoding=base64&c=${base64Config})`;\n\nreturn [{\n  json: {\n    facts_for_llm: facts,\n    pricing_table_md: pricingTable,\n    capital_section_md: capitalSection,\n    chart_image: chartImage,\n    results,\n    summary: {\n      skus: results.length, hold: count('HOLD'), markdown: count('MARKDOWN'),\n      clearance: count('CLEARANCE'), review: count('REVIEW'),\n      capital_tied_at_cost: capitalTiedAtCost, recoverable, revenue_given_up: revenueGivenUp,\n    },\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -832,
+        -656
+      ],
+      "id": "ea3ea7b6-1f30-4967-8d81-d35044f16860",
+      "name": "Pricing_Engine_JS"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 2: Report assembly\n// n8n Code node (replaces \"Code in JavaScript1\")  |  Mode: \"Run Once for All Items\"\n// Sits between \"Basic LLM Chain\" and \"Create a file\".\n// Node names used below must match your canvas:\n//   \"Code in JavaScript\"  = pricing engine\n//   \"Validate & Normalise\" = Step 1 validation node\n// ============================================================\n\nconst narrative = (($input.first().json.text) || '')\n  .replace(/^#+.*$/gm, '')   // drop any headings the model adds\n  .trim() || 'Executive summary unavailable.';\n\nconst engine = $('Pricing_Engine_JS').first().json;\nconst validated = $('Validate & Normalise').all().map((i) => i.json);\nconst rejected = validated.filter((v) => v.validation_status === 'rejected');\nconst warned = validated.filter((v) => v.validation_status === 'valid' && v.validation_warnings.length);\n\nconst label = (v) => v.sku || `row ${v.row_number}`;\nconst dq = [\n  `Rows received: ${validated.length} | Accepted: ${validated.length - rejected.length} | Rejected: ${rejected.length} | Accepted with warnings: ${warned.length}`,\n];\nif (rejected.length) {\n  dq.push('', '**Rejected rows (not priced):**', ...rejected.map((v) => `- ${label(v)}: ${v.validation_errors.join('; ')}`));\n}\nif (warned.length) {\n  dq.push('', '**Warnings (priced, please check):**', ...warned.map((v) => `- ${label(v)}: ${v.validation_warnings.join('; ')}`));\n}\n\nconst report = [\n  '# Retail Markdown Strategy Report',\n  `_Generated ${$now.toFormat('yyyy-MM-dd HH:mm')} | All amounts in SEK_`,\n  '',\n  '## Executive Summary',\n  '',\n  narrative,\n  '',\n  '## Pricing Action Table',\n  '',\n  engine.pricing_table_md,\n  '',\n  '## Total Capital Recoverable Estimate',\n  '',\n  engine.capital_section_md,\n  '',\n  '## Data Quality',\n  '',\n  dq.join('\\n'),\n  '',\n  '## Visual Chart',\n  '',\n  engine.chart_image,\n  '',\n].join('\\n');\n\nreturn [{ json: { text: report } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        -656
       ],
       "id": "579109b8-7f09-430a-975e-1d81d81ca357",
-      "name": "Code in JavaScript1"
+      "name": "Report_Assembly_JS"
     }
   ],
   "pinData": {
@@ -161,40 +180,342 @@
       {
         "json": {
           "sku": "SKU-4089",
+          "gtin": "7350001000015",
           "product_name": "Pro Noise-Canceling Headphones",
-          "category": "Electronics",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
           "cost_price_sek": 1200,
           "current_price_sek": 2499,
-          "competitor_price_sek": 2199,
+          "competitor_prices_sek": [
+            2199,
+            2249,
+            2179
+          ],
           "days_in_stock": 78,
           "units_in_stock": 140,
-          "sales_velocity_30d": 2
+          "sales_velocity_30d": 2,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4102",
+          "gtin": "7350001000022",
+          "product_name": "Portable Bluetooth Speaker",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 380,
+          "current_price_sek": 799,
+          "competitor_prices_sek": [
+            749,
+            779,
+            729
+          ],
+          "days_in_stock": 35,
+          "units_in_stock": 320,
+          "sales_velocity_30d": 48,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4155",
+          "gtin": "7350001000039",
+          "product_name": "Fitness Smartwatch Series 3",
+          "brand": "PulseWear",
+          "department": "Electronics",
+          "category": "Wearables",
+          "subcategory": "Smartwatches",
+          "supplier": "Techline Nordic",
+          "cost_price_sek": 1450,
+          "current_price_sek": 2990,
+          "competitor_prices_sek": [
+            2890,
+            2949,
+            2850
+          ],
+          "days_in_stock": 140,
+          "units_in_stock": 95,
+          "sales_velocity_30d": 6,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4201",
+          "gtin": "7350001000046",
+          "product_name": "10-inch Tablet 64GB",
+          "brand": "Lumio",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Techline Nordic",
+          "cost_price_sek": 1900,
+          "current_price_sek": 3490,
+          "competitor_prices_sek": [
+            3399,
+            3450,
+            3290
+          ],
+          "days_in_stock": 62,
+          "units_in_stock": 70,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 30
         }
       },
       {
         "json": {
           "sku": "SKU-9912",
+          "gtin": "7350002000014",
           "product_name": "Ergonomic Mesh Office Chair",
-          "category": "Furniture",
+          "brand": "Sittwell",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Chairs",
+          "supplier": "Nordic Furnishing",
           "cost_price_sek": 1800,
           "current_price_sek": 4500,
-          "competitor_price_sek": 4200,
+          "competitor_prices_sek": [
+            4200,
+            4390,
+            4290
+          ],
           "days_in_stock": 115,
           "units_in_stock": 85,
-          "sales_velocity_30d": 1
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-9930",
+          "gtin": "7350002000021",
+          "product_name": "Height-Adjustable Standing Desk",
+          "brand": "Sittwell",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Nordic Furnishing",
+          "cost_price_sek": 2600,
+          "current_price_sek": 5990,
+          "competitor_prices_sek": [
+            5790,
+            5890
+          ],
+          "days_in_stock": 54,
+          "units_in_stock": 40,
+          "sales_velocity_30d": 9,
+          "days_since_last_price_change": 25
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-9951",
+          "gtin": "7350002000038",
+          "product_name": "5-Shelf Oak Bookcase",
+          "brand": "Hemlig Home",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Storage",
+          "supplier": "Nordic Furnishing",
+          "cost_price_sek": 900,
+          "current_price_sek": 1799,
+          "competitor_prices_sek": [
+            1699,
+            1749,
+            1650
+          ],
+          "days_in_stock": 200,
+          "units_in_stock": 60,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 120
         }
       },
       {
         "json": {
           "sku": "SKU-1043",
+          "gtin": "7350003000013",
           "product_name": "Waterproof Trail Backpack 30L",
-          "category": "Outdoor",
+          "brand": "TrekNorth",
+          "department": "Outdoor",
+          "category": "Packs",
+          "subcategory": "Backpacks",
+          "supplier": "Fjall Gear AB",
           "cost_price_sek": 350,
           "current_price_sek": 899,
-          "competitor_price_sek": 849,
+          "competitor_prices_sek": [
+            849,
+            879,
+            859
+          ],
           "days_in_stock": 92,
           "units_in_stock": 210,
-          "sales_velocity_30d": 4
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 40
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1060",
+          "gtin": "7350003000020",
+          "product_name": "3-Person Dome Tent",
+          "brand": "TrekNorth",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Fjall Gear AB",
+          "cost_price_sek": 1100,
+          "current_price_sek": 2290,
+          "competitor_prices_sek": [
+            2190,
+            2250
+          ],
+          "days_in_stock": 160,
+          "units_in_stock": 48,
+          "sales_velocity_30d": 2,
+          "days_since_last_price_change": 75
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1088",
+          "gtin": "7350003000037",
+          "product_name": "Winter Sleeping Bag -15C",
+          "brand": "TrekNorth",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Sleeping Bags",
+          "supplier": "Fjall Gear AB",
+          "cost_price_sek": 780,
+          "current_price_sek": 1590,
+          "competitor_prices_sek": [
+            1490,
+            1549,
+            1520
+          ],
+          "days_in_stock": 28,
+          "units_in_stock": 130,
+          "sales_velocity_30d": 22,
+          "days_since_last_price_change": 14
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2010",
+          "gtin": "7350004000012",
+          "product_name": "Programmable Coffee Maker",
+          "brand": "Brygg",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Coffee",
+          "supplier": "Kok & Co",
+          "cost_price_sek": 420,
+          "current_price_sek": 999,
+          "competitor_prices_sek": [
+            949,
+            979,
+            929
+          ],
+          "days_in_stock": 85,
+          "units_in_stock": 175,
+          "sales_velocity_30d": 11,
+          "days_since_last_price_change": 50
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2034",
+          "gtin": "7350004000029",
+          "product_name": "Digital Air Fryer 5L",
+          "brand": "Brygg",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Small Appliances",
+          "supplier": "Kok & Co",
+          "cost_price_sek": 560,
+          "current_price_sek": 1299,
+          "competitor_prices_sek": [
+            1199,
+            1249,
+            1190
+          ],
+          "days_in_stock": 47,
+          "units_in_stock": 260,
+          "sales_velocity_30d": 31,
+          "days_since_last_price_change": 21
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2077",
+          "gtin": "7350004000036",
+          "product_name": "Cast Iron Skillet 26cm",
+          "brand": "Kok & Co",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Cookware",
+          "supplier": "Kok & Co",
+          "cost_price_sek": 150,
+          "current_price_sek": 449,
+          "competitor_prices_sek": [
+            429,
+            449
+          ],
+          "days_in_stock": 310,
+          "units_in_stock": 190,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 150
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3005",
+          "gtin": "7350005000011",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Fitness",
+          "subcategory": "Yoga",
+          "supplier": "Active Nordic",
+          "cost_price_sek": 70,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            229,
+            239,
+            219
+          ],
+          "days_in_stock": 22,
+          "units_in_stock": 500,
+          "sales_velocity_30d": 64,
+          "days_since_last_price_change": 10
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3021",
+          "gtin": "7350005000028",
+          "product_name": "Adjustable Dumbbell Set 20kg",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Fitness",
+          "subcategory": "Weights",
+          "supplier": "Active Nordic",
+          "cost_price_sek": 650,
+          "current_price_sek": 1390,
+          "competitor_prices_sek": [
+            1299,
+            1350
+          ],
+          "days_in_stock": 66,
+          "units_in_stock": 90,
+          "sales_velocity_30d": 7,
+          "days_since_last_price_change": 35
         }
       }
     ]
@@ -204,7 +525,7 @@
       "main": [
         [
           {
-            "node": "Code in JavaScript",
+            "node": "Validate & Normalise",
             "type": "main",
             "index": 0
           }
@@ -222,12 +543,47 @@
         ]
       ]
     },
-    "AI Agent": {
+    "Basic LLM Chain": {
       "main": [
-        []
+        [
+          {
+            "node": "Report_Assembly_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Code in JavaScript": {
+    "Validate & Normalise": {
+      "main": [
+        [
+          {
+            "node": "Valid rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid rows?": {
+      "main": [
+        [
+          {
+            "node": "Pricing_Engine_JS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pricing_Engine_JS": {
       "main": [
         [
           {
@@ -238,18 +594,7 @@
         ]
       ]
     },
-    "Basic LLM Chain": {
-      "main": [
-        [
-          {
-            "node": "Code in JavaScript1",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code in JavaScript1": {
+    "Report_Assembly_JS": {
       "main": [
         [
           {
@@ -266,7 +611,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "dfb4512e-3bf3-46ae-91d6-27ace6d2ee2e",
+  "versionId": "53a39504-f8f4-4d8c-a846-5635036cb091",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "d14b97bea6c3478afeea260c2fa977025c12c6be3a895a942f146e7cd4435d28"
