@@ -418,8 +418,4 @@ This test set is not in the repository yet (see the roadmap).
 - [ ] Machine-readable `decisions.json` or CSV committed next to each report for audit
 - [ ] Scheduled runs and a real inventory source instead of a manual webhook call
 
----
 
-## 📜 License
-
-Add your preferred license here (e.g. MIT).
