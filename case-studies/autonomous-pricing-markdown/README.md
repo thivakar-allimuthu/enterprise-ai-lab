@@ -56,7 +56,10 @@ flowchart LR
     B --> C{"Valid rows?"}
     C -- "rejected" --> R["Rejected rows"]
     C -- "valid" --> D["Pricing_Engine_JS<br/>decisions + facts"]
-    D --> E["Policy_Audit_JS<br/>recompute rules, chunk policy"]
+    D --> P0["Policy_Source_JS + Policy_Commit<br/>latest policy commit in git"]
+    P0 --> P1["Policy_Manifest + Policy_Docs_JS<br/>version, parameters, document list"]
+    P1 --> P2["Fetch_Policy_PDF + Extract_Policy_Text<br/>one PDF per document"]
+    P2 --> E["Policy_Audit_JS<br/>chunks, audit"]
     E --> F["Embed_Policy<br/>Ollama nomic-embed-text"]
     F --> G["Policy_Retrieve_JS<br/>top-3 clauses per flagged SKU"]
     G --> H["Policy_Notes_Chain<br/>Ollama llama3.2"]
@@ -98,11 +101,11 @@ Suggested structure for publishing:
 ├── README.md
 ├── workflow/
 │   └── Autonomous Pricing & Markdown Agent_RAG.json   # n8n workflow export (no credentials)
-├── policy/
-│   └── pricing_policy.md                              # the policy that is embedded in Policy_Audit_JS
 ├── code/
 │   ├── validate_and_normalise.js
 │   ├── pricing_engine.js
+│   ├── policy_source.js                               # where the policy lives in git
+│   ├── policy_docs.js                                 # manifest to one item per PDF
 │   ├── policy_audit.js
 │   ├── policy_retrieve.js
 │   ├── policy_collect.js
@@ -114,7 +117,12 @@ Suggested structure for publishing:
 │   └── ...                                            # synthetic payloads (clean and with errors)
 ├── docker-compose.yml                                 # n8n + Neo4j (see Setup)
 └── case-studies/autonomous-pricing-markdown/
-    └── index.html                                     # latest generated report
+    ├── index.html                                     # latest generated report
+    └── policies/                                      # the policy, read by the pipeline from git
+        ├── policy-manifest.json                       # version, rule parameters, list of documents
+        ├── 01-pricing-and-markdown.pdf
+        ├── 02-approvals-and-escalation.pdf
+        └── 03-clearance-seasonality-data-quality.pdf
 ```
 
 ---
@@ -253,7 +261,7 @@ All thresholds live in a single `CONFIG` object at the top of the node.
 These assume all units sell, so they are not time-adjusted for sales velocity.
 
 ### 4. Policy audit and RAG
-`Policy_Audit_JS`, `Embed_Policy`, `Policy_Retrieve_JS`, `Policy_Notes_Chain` and `Policy_Collect_JS`. See [Policy Audit and RAG](#-policy-audit-and-rag).
+`Policy_Source_JS`, `Policy_Commit`, `Policy_Manifest`, `Policy_Docs_JS`, `Fetch_Policy_PDF`, `Extract_Policy_Text`, `Policy_Audit_JS`, `Embed_Policy`, `Policy_Retrieve_JS`, `Policy_Notes_Chain` and `Policy_Collect_JS`. See [Policy Audit and RAG](#-policy-audit-and-rag).
 
 ### 5. Graph_Sync_JS
 Writes the run into Neo4j and reads back insight queries. See [Knowledge Graph](#-knowledge-graph).
@@ -273,7 +281,39 @@ The node uses the GitHub **edit** operation, so the file must already exist in t
 
 ## 📚 Policy Audit and RAG
 
-The policy is a short, numbered document (`policy/pricing_policy.md`, 10 sections, clauses `P-1.1` to `P-10.1`). Its text is embedded as a constant inside `Policy_Audit_JS` and ends with a machine-readable `policy-parameters` JSON block. Keeping the parameters in the policy means the engine and the audit can be checked against each other.
+The policy is kept **in git**, as three short PDF documents and one manifest, in the `policies/` folder of the repository (24 clauses, `P-1.1` to `P-10.1`, split by topic):
+
+| File | Covers |
+|---|---|
+| `01-pricing-and-markdown.pdf` | Purpose and scope, margin protection, size and form of price changes, demand and stock, competition |
+| `02-approvals-and-escalation.pdf` | Approvals and escalation, timing and cooldown, records |
+| `03-clearance-seasonality-data-quality.pdf` | Clearance criteria, seasonal rules, product identifiers and rejected rows |
+| `policy-manifest.json` | Policy version, the rule **parameters** (JSON), and the list of documents |
+
+The pipeline reads the policy **from GitHub on every run**, so a rule change is a commit, not an edit of a Code node:
+
+1. `Policy_Source_JS` holds the only reference to the repository (owner, repository, branch, folder).
+2. `Policy_Commit` asks the GitHub API for the **latest commit that touched the policy folder**.
+3. `Policy_Manifest` downloads `policy-manifest.json` at exactly that commit; `Policy_Docs_JS` turns its document list into one item per PDF.
+4. `Fetch_Policy_PDF` downloads each PDF at the same commit and `Extract_Policy_Text` turns each into text.
+5. `Policy_Audit_JS` splits every document into clauses and runs the audit.
+
+Because all files are read at one commit, the report always states exactly which policy produced it: the Policy Review section shows the policy version, the short commit hash and the number of documents. The repository must be reachable (public, or add a token to the HTTP nodes); the run stops with an error if the policy cannot be loaded, because auditing against no policy would be misleading.
+
+All numeric rules live in **one place**, the `parameters` object in the manifest, which must match `CONFIG` in `Pricing_Engine_JS`. The documents explain the rules; the audit takes its numbers from the manifest. The numbers are plain JSON, so a change to a threshold shows up as a readable diff in git.
+
+**What the PDFs must look like.** The reader relies on a simple structure, so keep it when you edit or add a document:
+
+| Element | Format | Used for |
+|---|---|---|
+| Section heading | `4. Approvals and escalation` | Ends the previous clause |
+| Clause | A line starting with the clause ID, such as `P-4.1 Approval threshold`, followed by its text | One RAG chunk per clause |
+| Scope line | `Applies to: Furniture, Electronics.` as the first words of a clause | Department filter in retrieval |
+| Clause IDs | Unique across **all** documents | Citations and the graph |
+| Page footer | Starts with `Retail Pricing and Markdown Policy` or `Page n` | Ignored when reading |
+| New document | Added to `documents` in the manifest (`file`, `title`) | Fetched in the listed order |
+
+The PDFs need a text layer (a PDF exported from Word or Google Docs works; a scan does not). If the manifest is incomplete, a document is empty or has no clauses, or a clause ID appears twice, the run stops with a message that names the file.
 
 ### Step 1: deterministic audit (`Policy_Audit_JS`)
 Every SKU decision is **recomputed from the policy parameters** and compared with what the engine produced. This is a second, independent implementation of the rules.
@@ -387,7 +427,7 @@ The same idea, **verify before you trust**, is used for the policy clause notes 
 | Section | Content |
 |---|---|
 | **KPI cards** | SKUs analysed, needs approval, average markdown, capital tied up, recoverable capital, revenue given up |
-| **Executive summary** | The deterministic summary |
+| **Executive summary** | A plain-language summary for management, built only from the calculated figures (no AI): headline result, what was done, why prices change or stay, what it means financially, where the impact is, what needs attention, how reliable the result is, and a short glossary |
 | **Action mix** | Proportional bar of `HOLD`, `MARKDOWN`, `CLEARANCE`, `REVIEW` |
 | **Revenue given up by department** | Bars with average markdown and number of SKUs changed |
 | **Pricing actions** | Sortable, searchable table with filters (action, needs approval). Click a row to see its **path in the graph** (department > category > subcategory > product > variant > SKU @ store), the clauses behind the decision, the reasons, and the same variant in other stores |
@@ -395,7 +435,7 @@ The same idea, **verify before you trust**, is used for the policy clause notes 
 | **Policy review** | Audit result and the verified clause notes |
 | **Data quality** | Rows received, accepted, rejected and warned, with the warnings |
 
-The footer states whether the AI commentary was included or omitted. The commentary text itself is part of the Markdown report (see [Known Limitations](#-known-limitations)).
+The summary adapts to the run: it adds, drops or rewords sections (for example approvals, items below the minimum margin, policy violations, stock-transfer opportunities) depending on what the figures show. The Markdown report keeps the shorter one-paragraph summary. The footer states whether the AI commentary was included or omitted. The commentary text itself is part of the Markdown report (see [Known Limitations](#-known-limitations)).
 
 > Add a screenshot here after publishing, for example `docs/report-screenshot.png`.
 
@@ -414,9 +454,10 @@ The footer states whether the AI commentary was included or omitted. The comment
 | 7 | **Wrong LLM claims reaching the report** | Free-text output cannot be trusted | Summary guard: commentary is published only if every number and claim matches the calculated facts |
 | 8 | **Guard rejecting correct sentences** | First rules assigned one topic per clause and did not know about caps, thresholds or bare SKU numbers | Matched each number to its nearest topic word; separated rules from results; added tests for each case found |
 | 9 | **Engine and policy could drift apart** | Rules lived only in the engine code | Policy parameters are machine-readable; `Policy_Audit_JS` recomputes every decision independently |
-| 10 | **LLM citing clauses that do not apply** | Free-text policy notes | Retrieval limited to 3 clauses per SKU; notes may cite only retrieved clauses and numbers from the decision; fallback to the clause list |
-| 11 | **n8n could not reach Neo4j or Ollama** | `localhost` inside a container is the container itself | n8n and Neo4j share a Docker network (`http://neo4j:7474`); Ollama is reached at `host.docker.internal:11434` |
-| 12 | **Slow, memory-hungry local models on 8 GB** | Ollama in Docker has no GPU access on macOS | Ollama runs natively on macOS (Apple GPU); Docker memory limits lowered; embeddings are batched in a single call |
+| 10 | **Policy text hidden inside a Code node** | The policy was a long string constant in `Policy_Audit_JS` | The policy lives in git as several PDFs plus a manifest; the workflow reads them at the latest policy commit and records that commit in the report |
+| 11 | **LLM citing clauses that do not apply** | Free-text policy notes | Retrieval limited to 3 clauses per SKU; notes may cite only retrieved clauses and numbers from the decision; fallback to the clause list |
+| 12 | **n8n could not reach Neo4j or Ollama** | `localhost` inside a container is the container itself | n8n and Neo4j share a Docker network (`http://neo4j:7474`); Ollama is reached at `host.docker.internal:11434` |
+| 13 | **Slow, memory-hungry local models on 8 GB** | Ollama in Docker has no GPU access on macOS | Ollama runs natively on macOS (Apple GPU); Docker memory limits lowered; embeddings are batched in a single call |
 
 ### Why not the AI Agent node?
 The n8n AI Agent node introduced hallucinated products and incorrect currencies earlier in the build. For "turn these facts into a short text", the Basic LLM Chain is simpler, more predictable and easier to debug. An agent is on the [roadmap](#-roadmap) for the **decision layer**, with the deterministic engine and the policy audit as its guardrails.
@@ -475,10 +516,11 @@ Open n8n at <http://localhost:5678> and Neo4j Browser at <http://localhost:7474>
 1. In n8n, choose **Import from file** and select the workflow JSON from `workflow/`.
 2. **Ollama Chat Model** and **Ollama Chat Model (policy)**: create an Ollama credential with base URL `http://host.docker.internal:11434` and select `llama3.2:latest`.
 3. **Embed_Policy:** the URL is `http://host.docker.internal:11434/api/embed`; change it if your Ollama runs elsewhere.
-4. **Graph_Sync_JS:** set the Neo4j URL (`http://neo4j:7474/db/neo4j/query/v2` inside the compose network), user and password in the `NEO4J` constant. **Do not commit a real password.** Replace it before sharing the export, or read it from an n8n credential or environment variable.
-5. **Create HTML File:** add your GitHub credential and set your own owner, repository and path. Keep the file path and content fields in **Expression mode (`fx`)**. Because the node uses the **edit** operation, create a placeholder `index.html` at that path first.
-6. Keep the node names unchanged (`Pricing_Engine_JS`, `Validate & Normalise`, `Policy_Audit_JS`, `Policy_Retrieve_JS`, `Policy_Collect_JS`, `Graph_Sync_JS`, `Report_Assembly_JS`), because Code nodes refer to each other by name.
-7. Activate the workflow.
+4. **Policy files:** commit the `policies/` folder (manifest and PDFs) to your repository. In `Policy_Source_JS`, set `owner`, `repo`, `branch` and `path` to where they live. For a private repository, add an `Authorization: Bearer <token>` header to `Policy_Commit`, `Policy_Manifest` and `Fetch_Policy_PDF`.
+5. **Graph_Sync_JS:** set the Neo4j URL (`http://neo4j:7474/db/neo4j/query/v2` inside the compose network), user and password in the `NEO4J` constant. **Do not commit a real password.** Replace it before sharing the export, or read it from an n8n credential or environment variable.
+6. **Create HTML File:** add your GitHub credential and set your own owner, repository and path. Keep the file path and content fields in **Expression mode (`fx`)**. Because the node uses the **edit** operation, create a placeholder `index.html` at that path first.
+7. Keep the node names unchanged (`Pricing_Engine_JS`, `Validate & Normalise`, `Policy_Audit_JS`, `Policy_Retrieve_JS`, `Policy_Collect_JS`, `Graph_Sync_JS`, `Report_Assembly_JS`), because Code nodes refer to each other by name.
+8. Activate the workflow.
 
 > Credentials are not included in the workflow file; create your own.
 
@@ -488,7 +530,7 @@ Open n8n at <http://localhost:5678> and Neo4j Browser at <http://localhost:7474>
 
 **Inside n8n (no terminal needed)**
 
-1. Open the Webhook node and unpin any old data.
+1. Open the Webhook node and unpin any old data. Check that `Policy_Commit` returns a commit `sha`, that `Policy_Docs_JS` lists three documents and that `Extract_Policy_Text` returns a `text` field for each.
 2. In the output panel, choose **Set mock data** (or **Edit Output**) and paste a sample payload from `sample-data/`.
 3. Click **Execute workflow**.
 4. Check: `Validate & Normalise` lists all rows, valid rows go on to pricing, rejected rows land in `Rejected rows`. After the run, `Policy_Collect_JS` shows `policy_audit.passed`, `Graph_Sync_JS` shows `graph.available`, and `Report_Assembly_JS` shows `llm_commentary` and `guard_problems`.
@@ -530,6 +572,8 @@ RETURN c.id, c.title, count(d) AS decisions ORDER BY decisions DESC;
 
 - **The guard is rule-based.** It verifies the numbers and claim types it knows about. It cannot judge tone or a made-up qualitative statement, and an unusual but correct phrasing may be rejected. The consequence is limited: the optional commentary is omitted.
 - **The HTML report shows only the commentary status.** The commentary text is part of the Markdown report, and the Markdown node is currently disabled. Re-enable `Create MD File` (its content field must read `{{ $json.text }}` from `Report_Assembly_JS`) or add the commentary to `Report_HTML` if you want it published.
+- **The policy PDFs have a fixed structure.** Clause IDs, section headings and the manifest are parsed with simple patterns (see the table above). A redesigned layout can break the parsing; the node then fails with an error rather than guessing. PDFs also show no readable diff in git; the rule numbers do, because they are in the JSON manifest.
+- **The pipeline needs GitHub to be reachable on every run.** Anonymous GitHub API requests are rate limited (60 per hour per IP); a run uses one API call plus raw file downloads, which is well within that, but heavy testing can hit it.
 - **The policy audit covers the clauses it can compute.** P-2.1, P-2.2 (through the `REVIEW` label), P-3.1 to P-3.4, P-4.1, P-6.1 and P-8.1 are checked. Escalation and timing clauses (P-4.2, P-4.4, P-5.2) and seasonality (P-8.2) are retrieved and shown to a reviewer but are **not enforced or verified by code** yet.
 - **Approval is a flag, not a gate.** Markdowns of 15% or more are flagged in the report but are not blocked or routed to a human yet.
 - **Clause review is capped** at 12 SKUs per run, ranked by severity.
