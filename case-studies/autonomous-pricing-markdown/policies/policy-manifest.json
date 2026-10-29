@@ -1,0 +1,46 @@
+{
+  "policy": "Retail Pricing and Markdown Policy",
+  "version": "1.1",
+  "note": "Parameters must match CONFIG in Pricing_Engine_JS. Documents are read in the order listed.",
+  "parameters": {
+    "min_markup_by_department": {
+      "Electronics": 0.1,
+      "Furniture": 0.25,
+      "Outdoor": 0.2,
+      "Home": 0.2,
+      "Sports": 0.2
+    },
+    "default_min_markup": 0.15,
+    "max_markdown_per_run": 0.25,
+    "min_markdown_pct_to_act": 1,
+    "approval_threshold_pct": 15,
+    "price_change_cooldown_days": 14,
+    "competitor_undercut": 0.02,
+    "competitor_outlier_low": 0.5,
+    "fast_mover_max_cover_weeks": 8,
+    "fast_mover_max_age_days": 60,
+    "clearance_min_age_days": 120,
+    "clearance_min_cover_weeks": 26,
+    "price_ending_digit": 9
+  },
+  "documents": [
+    {
+      "file": "01-pricing-and-markdown.pdf",
+      "title": "Pricing and Markdown Rules",
+      "covers": "Purpose and scope, margin protection, size and form of price changes, demand and stock, competition",
+      "clauses": 13
+    },
+    {
+      "file": "02-approvals-and-escalation.pdf",
+      "title": "Approvals, Escalation and Timing",
+      "covers": "Approvals and escalation, timing and cooldown, records",
+      "clauses": 7
+    },
+    {
+      "file": "03-clearance-seasonality-data-quality.pdf",
+      "title": "Clearance, Seasonality and Data Quality",
+      "covers": "Clearance criteria, seasonal rules, product identifiers and rejected rows",
+      "clauses": 4
+    }
+  ]
+}
