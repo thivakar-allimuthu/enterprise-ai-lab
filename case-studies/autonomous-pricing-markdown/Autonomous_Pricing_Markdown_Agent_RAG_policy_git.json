@@ -1,0 +1,3134 @@
+{
+  "name": "Autonomous Pricing & Markdown Agent_RAG",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "61f27db4-c085-4304-9bf8-67be1f41c24f",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        -112
+      ],
+      "id": "3f239302-6f79-43b9-901c-af81022bf8d1",
+      "name": "Webhook",
+      "webhookId": "61f27db4-c085-4304-9bf8-67be1f41c24f"
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        3552,
+        32
+      ],
+      "id": "a669dbc1-0c3e-402a-b1f7-e6bc43da12d8",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "RiCrKekTghosCpGv",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a retail pricing analyst writing for an executive audience.\n\nWrite a short COMMENTARY of 3 to 4 sentences on what stands out in this run, using ONLY the facts below. A full summary with all figures is already written elsewhere, so do not list every figure: use at most four numbers.\n\n{{ $json.facts_for_llm }}\n\nSTRICT RULES:\n- Copy every number exactly as written in the facts. Never round, convert, combine, add or estimate numbers.\n- Describe each figure for what it is: the average is the average, a single SKU's markdown is that SKU's markdown, a count is a count.\n- Only the SKUs with a price change were repriced. Do not say that actions or changes were taken on all SKUs.\n- All money figures are projections that assume the stock sells at the recommended prices. Use words like \"would\", \"projected\" or \"estimated\". Never say revenue \"was lost\" or \"was given up\".\n- Use only the SKUs and product names that appear in the facts. Write SKU codes exactly as shown, for example SKU-9912, never as a bare number.\n- Do not write headings, tables, bullet lists, charts or code blocks.\n- Do not add disclaimers, greetings or notes about yourself.\n- All amounts are in SEK.",
+        "messages": {
+          "messageValues": []
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        3472,
+        -208
+      ],
+      "id": "a35228b1-a7ba-45de-9cc0-5ff757d55917",
+      "name": "Basic LLM Chain",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 1: Input validation & normalisation\n// n8n Code node  |  Mode: \"Run Once for All Items\"\n// Place directly after the Webhook node.\n// ============================================================\n\nconst CONFIG = {\n  GTIN_REQUIRED: false,            // true = missing GTIN becomes an error instead of a warning\n  MAX_DAYS_IN_STOCK_WARN: 730,     // warn when stock is older than ~2 years\n  COMPETITOR_OUTLIER_LOW: 0.5,     // competitor < 50% of our price  -> warning\n  COMPETITOR_OUTLIER_HIGH: 2.0,    // competitor > 200% of our price -> warning\n};\n\n// ---------- 1. Unwrap webhook body (array or single object) ----------\nconst rows = [];\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  if (j.body !== undefined && j.body !== null && typeof j.body === 'object') {\n    rows.push(...(Array.isArray(j.body) ? j.body : [j.body]));\n  } else {\n    rows.push(j);\n  }\n}\n\n// ---------- 2. Helpers ----------\nconst toNum = (v) => {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;\n  if (typeof v === 'string' && v.trim() !== '') return Number(v.trim().replace(',', '.'));\n  return NaN;\n};\nconst orNull = (n) => (Number.isNaN(n) ? null : n);\nconst median = (arr) => {\n  if (!arr.length) return null;\n  const s = [...arr].sort((a, b) => a - b);\n  const m = Math.floor(s.length / 2);\n  return s.length % 2 ? s[m] : Math.round(((s[m - 1] + s[m]) / 2) * 100) / 100;\n};\n\n// GS1 check-digit validation (GTIN-8, 12, 13, 14)\nconst gtinValid = (g) => {\n  if (!/^(\\d{8}|\\d{12,14})$/.test(g)) return false;\n  const d = g.split('').map(Number);\n  const check = d.pop();\n  let sum = 0;\n  d.reverse().forEach((n, i) => { sum += n * (i % 2 === 0 ? 3 : 1); });\n  return (10 - (sum % 10)) % 10 === check;\n};\n\n// ---------- 3. Validate each row ----------\nconst seenSkus = new Set();\n\nconst results = rows.map((row, idx) => {\n  row = row && typeof row === 'object' ? row : {};\n  const errors = [];\n  const warnings = [];\n\n  const str = (k) => (row[k] === undefined || row[k] === null ? '' : String(row[k]).trim());\n\n  // --- text fields ---\n  const sku = str('sku');\n  const productName = str('product_name');\n  const department = str('department');\n  const category = str('category');\n  const gtin = str('gtin');\n\n  if (!sku) errors.push('Missing sku');\n  if (!productName) errors.push('Missing product_name');\n  if (!department) errors.push('Missing department');\n  if (!category) errors.push('Missing category');\n\n  if (sku) {\n    if (seenSkus.has(sku)) errors.push(`Duplicate sku: ${sku}`);\n    seenSkus.add(sku);\n  }\n\n  if (!gtin) {\n    (CONFIG.GTIN_REQUIRED ? errors : warnings).push('Missing GTIN');\n  } else if (!gtinValid(gtin)) {\n    errors.push(`Invalid GTIN (format or GS1 check digit): ${gtin}`);\n  }\n\n  // --- numeric fields ---\n  const cost = toNum(row.cost_price_sek);\n  const price = toNum(row.current_price_sek);\n  const daysInStock = toNum(row.days_in_stock);\n  const units = toNum(row.units_in_stock);\n  const velocity = toNum(row.sales_velocity_30d);\n  const sinceChange = row.days_since_last_price_change === undefined\n    ? NaN : toNum(row.days_since_last_price_change);\n\n  if (!(cost > 0)) errors.push('cost_price_sek must be a number > 0');\n  if (!(price > 0)) errors.push('current_price_sek must be a number > 0');\n  if (!(daysInStock >= 0)) errors.push('days_in_stock must be a number >= 0');\n  if (!(units >= 0) || !Number.isInteger(units)) errors.push('units_in_stock must be a whole number >= 0');\n  if (!(velocity >= 0)) errors.push('sales_velocity_30d must be a number >= 0');\n  if (row.days_since_last_price_change !== undefined && !(sinceChange >= 0)) {\n    errors.push('days_since_last_price_change must be a number >= 0');\n  }\n\n  // --- competitor prices (new array field, legacy single field still accepted) ---\n  let rawComps = row.competitor_prices_sek;\n  if (rawComps === undefined && row.competitor_price_sek !== undefined) rawComps = [row.competitor_price_sek];\n  if (rawComps === undefined || rawComps === null) rawComps = [];\n\n  let comps = [];\n  if (!Array.isArray(rawComps)) {\n    errors.push('competitor_prices_sek must be an array of numbers');\n  } else {\n    comps = rawComps.map(toNum);\n    if (comps.some((c) => !(c > 0))) {\n      errors.push('competitor_prices_sek contains a non-numeric or non-positive value');\n      comps = comps.filter((c) => c > 0);\n    }\n  }\n\n  // --- business-sanity warnings (row still passes) ---\n  if (price > 0 && cost > 0 && price < cost) {\n    warnings.push('Current price is below cost (negative margin)');\n  }\n  if (!comps.length && !errors.some((e) => e.startsWith('competitor_prices_sek'))) {\n    warnings.push('No competitor prices available: competitor-based pricing skipped');\n  }\n  if (price > 0 && comps.some((c) => c < price * CONFIG.COMPETITOR_OUTLIER_LOW || c > price * CONFIG.COMPETITOR_OUTLIER_HIGH)) {\n    warnings.push('Competitor price looks like an outlier compared with our price');\n  }\n  if (daysInStock > CONFIG.MAX_DAYS_IN_STOCK_WARN) {\n    warnings.push(`days_in_stock above ${CONFIG.MAX_DAYS_IN_STOCK_WARN}`);\n  }\n\n  // ---------- 4. Build normalised output ----------\n  const compMin = comps.length ? Math.min(...comps) : null;\n  const valid = errors.length === 0;\n\n  const out = {\n    row_number: idx + 1,\n    validation_status: valid ? 'valid' : 'rejected',\n    validation_errors: errors,\n    validation_warnings: warnings,\n\n    sku,\n    gtin: gtin || null,\n    product_name: productName,\n    brand: str('brand') || null,\n    department,\n    category,\n    subcategory: str('subcategory') || null,\n    supplier: str('supplier') || null,\n    store: str('store') || null,\n    variant: str('variant') || null,\n\n    cost_price_sek: orNull(cost),\n    current_price_sek: orNull(price),\n    days_in_stock: orNull(daysInStock),\n    units_in_stock: orNull(units),\n    sales_velocity_30d: orNull(velocity),\n    days_since_last_price_change: orNull(sinceChange),\n\n    competitor_prices_sek: comps,\n    competitor_count: comps.length,\n    competitor_min_sek: compMin,\n    competitor_median_sek: median(comps),\n    competitor_max_sek: comps.length ? Math.max(...comps) : null,\n\n    // Backward compatibility: the current pricing node still reads this single field.\n    // When no competitor data exists, fall back to our own price so the price is held.\n    competitor_price_sek: compMin !== null ? compMin : orNull(price),\n  };\n\n  if (!valid) out.raw_input = row;   // keep original data for review\n\n  return { json: out };\n});\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -112
+      ],
+      "id": "03a93f11-0848-4913-bde6-c625a3660e1c",
+      "name": "Validate & Normalise"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0002-4000-8000-000000000002",
+              "leftValue": "={{ $json.validation_status }}",
+              "rightValue": "valid",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -112
+      ],
+      "id": "c6924cff-68a6-4e1e-a2ab-d57540fe8902",
+      "name": "Valid rows?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        448,
+        -16
+      ],
+      "id": "26dc9ae1-d207-4867-9794-37b0c0ea2b9b",
+      "name": "Rejected rows"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 2: Pricing engine v2\n// n8n Code node (replaces \"Code in JavaScript\")  |  Mode: \"Run Once for All Items\"\n// Input : valid rows from \"Valid rows?\" (output of Step 1)\n// Output: ONE item with the per-SKU decisions, the report table,\n//         the capital estimate, the chart link and a facts block for the LLM.\n// ============================================================\n\nconst CONFIG = {\n  // Minimum markup over cost, by department (price floor = cost x (1 + markup))\n  MIN_MARKUP_BY_DEPARTMENT: { Electronics: 0.10, Furniture: 0.25, Outdoor: 0.20, Home: 0.20, Sports: 0.20 },\n  DEFAULT_MIN_MARKUP: 0.15,\n\n  COMPETITOR_UNDERCUT: 0.02,          // undercut the cheapest credible competitor by 2%\n  COMPETITOR_OUTLIER_LOW: 0.5,        // competitor prices below 50% of our price are ignored as outliers\n\n  MAX_MARKDOWN_PER_RUN: 0.25,         // no price falls more than 25% in one run\n  MAX_STOCK_PRESSURE_DEPTH: 0.30,     // age + cover markdown depth is capped at 30%\n  MIN_MARKDOWN_PCT_TO_ACT: 1,         // ignore changes smaller than 1%\n  PRICE_CHANGE_COOLDOWN_DAYS: 14,     // do not touch a price changed less than 14 days ago\n\n  FAST_MOVER_MAX_COVER_WEEKS: 8,      // fast mover = <= 8 weeks of cover ...\n  FAST_MOVER_MAX_AGE_DAYS: 60,        // ... and <= 60 days in stock\n\n  CLEARANCE_MIN_AGE_DAYS: 120,        // clearance = >= 120 days in stock ...\n  CLEARANCE_MIN_COVER_WEEKS: 26,      // ... and >= 26 weeks of cover\n\n  APPROVAL_THRESHOLD_PCT: 15,         // markdowns >= 15% are flagged for human approval\n\n  // Markdown depth by days in stock\n  AGE_TIERS: [\n    { max: 30, depth: 0 }, { max: 60, depth: 0.03 }, { max: 90, depth: 0.08 },\n    { max: 120, depth: 0.15 }, { max: Infinity, depth: 0.25 },\n  ],\n  // Markdown depth by weeks of cover (stock on hand / weekly sales rate)\n  COVER_TIERS: [\n    { max: 8, depth: 0 }, { max: 13, depth: 0.03 }, { max: 26, depth: 0.06 },\n    { max: 52, depth: 0.12 }, { max: Infinity, depth: 0.20 },\n  ],\n};\n\n// ---------- helpers ----------\nconst items = $input.all().map((i) => i.json);\nconst round2 = (n) => Math.round(n * 100) / 100;\nconst pct1 = (n) => Math.round(n * 10) / 10;\nconst tier = (tiers, v) => tiers.find((t) => v <= t.max).depth;\nconst roundUp9 = (x) => Math.ceil((x + 1) / 10) * 10 - 1;   // next price ending in 9 (never below x)\nconst sek = (n) => Math.round(n).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\nconst clean = (s) => String(s).replace(/\\|/g, '/');\n\n// ---------- decision per SKU ----------\nconst results = items.map((d) => {\n  const price = d.current_price_sek;\n  const cost = d.cost_price_sek;\n  const units = d.units_in_stock ?? 0;\n  const velocity = d.sales_velocity_30d ?? 0;\n  const days = d.days_in_stock ?? 0;\n  const since = d.days_since_last_price_change;\n\n  const markup = CONFIG.MIN_MARKUP_BY_DEPARTMENT[d.department] ?? CONFIG.DEFAULT_MIN_MARKUP;\n  const floor = round2(cost * (1 + markup));\n\n  const weeklyRate = (velocity * 7) / 30;\n  const cover = weeklyRate > 0 ? Math.min(units / weeklyRate, 999) : (units > 0 ? 999 : 0);\n\n  const comps = Array.isArray(d.competitor_prices_sek) && d.competitor_prices_sek.length\n    ? d.competitor_prices_sek\n    : (d.competitor_price_sek ? [d.competitor_price_sek] : []);\n  const credible = comps.filter((c) => c >= price * CONFIG.COMPETITOR_OUTLIER_LOW);\n  const compRef = credible.length ? Math.min(...credible) : null;\n\n  let action = 'HOLD';\n  let rec = price;\n  const reasons = [];\n  let ageDepth = 0, coverDepth = 0, depth = 0;\n\n  if (units === 0) {\n    reasons.push('No stock on hand');\n  } else if (price < floor) {\n    action = 'REVIEW';\n    reasons.push(`Current price is below the margin floor (${sek(floor)} SEK)`);\n  } else if (since !== null && since !== undefined && since < CONFIG.PRICE_CHANGE_COOLDOWN_DAYS) {\n    reasons.push(`Price changed ${since} days ago (cooldown ${CONFIG.PRICE_CHANGE_COOLDOWN_DAYS} days)`);\n  } else if (cover <= CONFIG.FAST_MOVER_MAX_COVER_WEEKS && days <= CONFIG.FAST_MOVER_MAX_AGE_DAYS) {\n    reasons.push(`Fast mover: ${cover.toFixed(1)} weeks of cover, ${days} days in stock`);\n  } else {\n    ageDepth = tier(CONFIG.AGE_TIERS, days);\n    coverDepth = tier(CONFIG.COVER_TIERS, cover);\n    depth = Math.min(ageDepth + coverDepth, CONFIG.MAX_STOCK_PRESSURE_DEPTH);\n\n    const stockPrice = price * (1 - depth);\n    const compPrice = compRef !== null && compRef < price ? compRef * (1 - CONFIG.COMPETITOR_UNDERCUT) : price;\n    const raw = Math.min(stockPrice, compPrice);\n    const capPrice = price * (1 - CONFIG.MAX_MARKDOWN_PER_RUN);\n\n    const target = Math.max(raw, capPrice, floor);\n    rec = Math.min(roundUp9(target), price);\n    let md = ((price - rec) / price) * 100;\n\n    if (md < CONFIG.MIN_MARKDOWN_PCT_TO_ACT) {\n      rec = price;\n      reasons.push('Calculated change below the minimum step: price held');\n    } else {\n      if (compPrice < price) reasons.push(`Cheapest credible competitor ${sek(compRef)} SEK`);\n      if (depth > 0) reasons.push(`Stock pressure ${pct1(depth * 100)}% (${days} days in stock, ${cover >= 999 ? 'no recent sales' : cover.toFixed(1) + ' weeks of cover'})`);\n      if (capPrice > raw && capPrice >= floor) reasons.push(`Capped at ${CONFIG.MAX_MARKDOWN_PER_RUN * 100}% max markdown per run`);\n      if (floor > raw && floor >= capPrice) reasons.push(`Limited by margin floor (${sek(floor)} SEK)`);\n      const clearance = days >= CONFIG.CLEARANCE_MIN_AGE_DAYS && cover >= CONFIG.CLEARANCE_MIN_COVER_WEEKS;\n      action = clearance ? 'CLEARANCE' : 'MARKDOWN';\n    }\n  }\n\n  const markdownPct = ((price - rec) / price) * 100;\n  const marginPct = ((rec - cost) / rec) * 100;\n\n  return {\n    sku: d.sku, gtin: d.gtin, product_name: d.product_name, department: d.department, category: d.category,\n    action,\n    current_price_sek: price,\n    recommended_price_sek: rec,\n    markdown_percent: pct1(markdownPct),\n    profit_margin_percent: pct1(marginPct),\n    cost_price_sek: cost,\n    margin_floor_sek: floor,\n    units_in_stock: units,\n    days_in_stock: days,\n    weeks_of_cover: cover >= 999 ? null : pct1(cover),\n    age_depth_pct: pct1(ageDepth * 100),\n    cover_depth_pct: pct1(coverDepth * 100),\n    approval_required: markdownPct >= CONFIG.APPROVAL_THRESHOLD_PCT,\n    reasons,\n  };\n});\n\n// ---------- aggregates (all deterministic) ----------\nconst changed = results.filter((r) => r.action === 'MARKDOWN' || r.action === 'CLEARANCE');\nconst count = (a) => results.filter((r) => r.action === a).length;\nconst sum = (arr, f) => arr.reduce((s, r) => s + f(r), 0);\n\nconst capitalTiedAtCost = sum(changed, (r) => r.units_in_stock * r.cost_price_sek);\nconst recoverable = sum(changed, (r) => r.units_in_stock * r.recommended_price_sek);\nconst revenueGivenUp = sum(changed, (r) => r.units_in_stock * (r.current_price_sek - r.recommended_price_sek));\nconst marginAtRecommended = sum(changed, (r) => r.units_in_stock * (r.recommended_price_sek - r.cost_price_sek));\nconst avgMarkdown = changed.length ? sum(changed, (r) => r.markdown_percent) / changed.length : 0;\nconst top = [...changed].sort((a, b) => b.markdown_percent - a.markdown_percent).slice(0, 3);\nconst approvals = results.filter((r) => r.approval_required).map((r) => r.sku);\nconst reviews = results.filter((r) => r.action === 'REVIEW');\nconst fastMovers = results.filter((r) => r.reasons.some((x) => x.startsWith('Fast mover'))).map((r) => r.sku);\n\n// ---------- facts block for the LLM ----------\nconst facts = [\n  'RUN FACTS (all amounts in SEK):',\n  `- SKUs analysed: ${results.length}`,\n  `- Actions: ${count('HOLD')} HOLD, ${count('MARKDOWN')} MARKDOWN, ${count('CLEARANCE')} CLEARANCE, ${count('REVIEW')} REVIEW`,\n  ...top.map((r, i) => `- Markdown #${i + 1}: ${r.sku} ${r.product_name}, ${r.markdown_percent}% (${sek(r.current_price_sek)} to ${sek(r.recommended_price_sek)})`),\n  `- Average markdown across marked-down SKUs: ${pct1(avgMarkdown)}%`,\n  `- Capital tied up at cost in marked-down stock: ${sek(capitalTiedAtCost)}`,\n  `- Total Capital Recoverable Estimate (cash if that stock sells at recommended prices): ${sek(recoverable)}`,\n  `- Revenue given up versus current prices: ${sek(revenueGivenUp)}`,\n  `- SKUs with a price change: ${changed.length}`,\n  `- Number of SKUs needing approval (markdown of ${CONFIG.APPROVAL_THRESHOLD_PCT}% or more): ${approvals.length}${approvals.length ? ' (' + approvals.join(', ') + ')' : ''}`,\n  `- SKUs flagged for review: ${reviews.length ? reviews.map((r) => `${r.sku} (${r.reasons[0]})`).join('; ') : 'none'}`,\n  `- Fast movers held at current price: ${fastMovers.length ? fastMovers.join(', ') : 'none'}`,\n  `- Maximum markdown allowed in one run: ${CONFIG.MAX_MARKDOWN_PER_RUN * 100}%`,\n].join('\\n');\n\n// ---------- structured facts + deterministic fallback summary (used by the summary guard) ----------\nconst factsObj = {\n  skus: results.length,\n  hold: count('HOLD'),\n  markdown: count('MARKDOWN'),\n  clearance: count('CLEARANCE'),\n  review: count('REVIEW'),\n  changed_count: changed.length,\n  avg_markdown_pct: pct1(avgMarkdown),\n  top_markdown_pcts: top.map((r) => r.markdown_percent),\n  capital_tied: Math.round(capitalTiedAtCost),\n  recoverable: Math.round(recoverable),\n  revenue_given_up: Math.round(revenueGivenUp),\n  approvals_count: approvals.length,\n  approval_threshold_pct: CONFIG.APPROVAL_THRESHOLD_PCT,\n  max_markdown_pct: CONFIG.MAX_MARKDOWN_PER_RUN * 100,\n};\n\nconst topLine = top.length\n  ? ` The largest markdown is ${top[0].markdown_percent}% on ${top[0].sku} (${top[0].product_name}).`\n  : '';\nconst fallbackSummary =\n  `This run analysed ${results.length} SKUs: ${count('HOLD')} held at the current price, ${count('MARKDOWN')} marked down and ${count('CLEARANCE')} on clearance.` +\n  (changed.length\n    ? ` The average markdown across the ${changed.length} SKUs with a price change is ${pct1(avgMarkdown)}%.${topLine}`\n    : ' No SKU received a price change.') +\n  ` Capital tied up at cost in these SKUs is ${sek(capitalTiedAtCost)} SEK, and the Total Capital Recoverable Estimate is ${sek(recoverable)} SEK if they sell at the recommended prices, with ${sek(revenueGivenUp)} SEK of revenue given up versus current prices.` +\n  ` ${approvals.length} SKUs need approval and ${reviews.length} SKUs are flagged for review.`;\n\n// ---------- Markdown: pricing action table ----------\nconst sorted = [...results].sort((a, b) => b.markdown_percent - a.markdown_percent || a.sku.localeCompare(b.sku));\nconst tableRows = sorted.map((r) =>\n  `| ${r.sku} | ${clean(r.product_name)} | ${r.action}${r.approval_required ? ' ⚠️' : ''} | ${sek(r.current_price_sek)} | ${sek(r.recommended_price_sek)} | ${r.markdown_percent}% | ${r.profit_margin_percent}% | ${r.weeks_of_cover === null ? 'no sales' : r.weeks_of_cover} | ${r.days_in_stock} | ${clean(r.reasons.join('; '))} |`\n);\nconst pricingTable = [\n  '| SKU | Product | Action | Current (SEK) | Recommended (SEK) | Markdown | Margin | Cover (weeks) | Days in stock | Why |',\n  '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',\n  ...tableRows,\n  '',\n  `⚠️ = markdown of ${CONFIG.APPROVAL_THRESHOLD_PCT}% or more, recommended for human approval before the price is changed.`,\n].join('\\n');\n\n// ---------- Markdown: capital section ----------\nconst capitalSection = [\n  `**Total Capital Recoverable Estimate: ${sek(recoverable)} SEK**`,\n  '',\n  `Cash recovered if all stock in the ${changed.length} marked-down SKUs sells at the recommended prices.`,\n  '',\n  '| Metric | SEK |',\n  '| --- | ---: |',\n  `| Capital tied up at cost (marked-down SKUs) | ${sek(capitalTiedAtCost)} |`,\n  `| Cash recoverable at recommended prices | ${sek(recoverable)} |`,\n  `| Margin earned at recommended prices | ${sek(marginAtRecommended)} |`,\n  `| Revenue given up versus current prices | ${sek(revenueGivenUp)} |`,\n  '',\n  '_Assumes all units sell; it is not time-adjusted for sales velocity._',\n].join('\\n');\n\n// ---------- chart ----------\nconst chartConfig = {\n  type: 'bar',\n  data: {\n    labels: results.map((r) => r.sku),\n    datasets: [\n      { label: 'Current Price (SEK)', data: results.map((r) => r.current_price_sek) },\n      { label: 'Recommended Price (SEK)', data: results.map((r) => r.recommended_price_sek) },\n    ],\n  },\n};\nconst base64Config = Buffer.from(JSON.stringify(chartConfig)).toString('base64');\nconst chartImage = `![Pricing Chart](https://quickchart.io/chart?w=900&h=400&encoding=base64&c=${base64Config})`;\n\nreturn [{\n  json: {\n    facts_for_llm: facts,\n    facts: factsObj,\n    fallback_summary: fallbackSummary,\n    pricing_table_md: pricingTable,\n    capital_section_md: capitalSection,\n    chart_image: chartImage,\n    results,\n    summary: {\n      skus: results.length, hold: count('HOLD'), markdown: count('MARKDOWN'),\n      clearance: count('CLEARANCE'), review: count('REVIEW'),\n      capital_tied_at_cost: capitalTiedAtCost, recoverable, revenue_given_up: revenueGivenUp,\n    },\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        -208
+      ],
+      "id": "cf979f91-6c3c-4e9e-9a4e-3a2005ce7731",
+      "name": "Pricing_Engine_JS"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 3: Report assembly with SUMMARY GUARD (deterministic summary + optional verified AI commentary)\n// n8n Code node (replaces \"Code in JavaScript1\")  |  Mode: \"Run Once for All Items\"\n// Sits between \"Basic LLM Chain\" and \"Create a file\".\n// Node names used below must match your canvas:\n//   \"Pricing_Engine_JS\"    = pricing engine\n//   \"Validate & Normalise\" = validation node\n// ============================================================\n\nconst GUARD = {\n  CLAIM_LEVEL_CHECK: true,   // false = only check that numbers exist in the facts (weaker)\n  PCT_TOLERANCE: 0.05,       // percentages must match within 0.05\n  MONEY_TOLERANCE: 0.5,      // SEK amounts are whole numbers\n};\n\nconst engine = $('Pricing_Engine_JS').first().json;\nconst F = engine.facts;\nconst results = engine.results;\nif (!F || !results || !engine.fallback_summary || !engine.facts_for_llm) {\n  throw new Error(\"The 'Pricing_Engine_JS' output is missing 'facts' / 'fallback_summary'. It is running an older pricing engine: paste the latest pricing_engine.js into that node, then run the workflow again.\");\n}\nconst validated = $('Validate & Normalise').all().map((i) => i.json);\nlet policy = null;   // optional: present once the policy RAG nodes are in the workflow\ntry { policy = $('Policy_Collect_JS').first().json; } catch (e) { policy = null; }\n\nconst llmText = (($input.first().json.text) || '')\n  .replace(/^#+.*$/gm, '')   // drop any headings the model adds\n  .trim();\n\n// ------------------------------------------------------------\n// SUMMARY GUARD\n// Tier 0: every SKU code mentioned must exist, and a percentage\n//         written next to a SKU must be that SKU's own markdown.\n// Tier 1: every number in the text must appear in the facts block.\n// Tier 2: every number must match the fact its own clause is about\n//         (average, recoverable, tied-up capital, counts, ...).\n// ------------------------------------------------------------\nconst esc = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst productNames = results.map((r) => r.product_name).sort((a, b) => b.length - a.length);\nconst skuDigits = new Set(results.map((r) => r.sku.replace(/\\D/g, '')));\nconst normSku = (x) => 'SKU-' + String(x).replace(/\\D/g, '');\n\n// Remove SKU codes and product names so digits inside them (\"64GB\", \"SKU-4089\") are not read as claims\nconst scrub = (s) => {\n  let t = s;\n  for (const n of productNames) t = t.replace(new RegExp(esc(n), 'gi'), ' PRODUCT ');\n  t = t.replace(/SKU[\\s-]?\\d+/gi, ' SKU ');\n  // bare known SKU numbers such as \"SKUs 9912, 1060 and 4089\" (not prices: no comma/decimal/percent/SEK around them)\n  return t.replace(/(?<![\\d,.])(\\d{3,6})(?!\\d|,\\d|%|\\.\\d|\\s*SEK)/g, (m, d) => (skuDigits.has(d) ? ' SKU ' : m));\n};\n\nconst WORDS = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,\n  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };\nconst numberWordsToDigits = (s) => s.replace(\n  /\\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\b(?=\\s+(?:\\w+\\s+){0,2}(?:SKUs?|items?|products?)\\b|\\s+of\\s+(?:the\\s+|all\\s+)?\\d+\\s+SKUs?\\b)/gi,\n  (w) => String(WORDS[w.toLowerCase()])\n);\n\nconst numbers = (s) => {\n  const out = [];\n  const re = /(\\d{1,3}(?:,\\d{3})+|\\d+)(\\.\\d+)?\\s*(%)?/g;\n  let m;\n  while ((m = re.exec(s)) !== null) {\n    out.push({\n      value: parseFloat(m[1].replace(/,/g, '') + (m[2] || '')),\n      pct: Boolean(m[3]),\n      raw: m[0].trim(),\n      start: m.index,\n      end: re.lastIndex,\n    });\n  }\n  return out;\n};\n\nconst near = (a, b, tol) => Math.abs(a - b) <= tol;\nconst inList = (v, list, tol) => list.some((x) => x !== undefined && x !== null && near(v, x, tol));\n\n// What each clause is about, in priority order (first match wins)\nconst LABELS = [\n  { name: 'average markdown', re: /\\b(averag(?:e|es|ed|ing)|mean)\\b/i,\n    pct: [F.avg_markdown_pct], count: [F.changed_count, F.skus, F.markdown, F.clearance] },\n  { name: 'recoverable capital', re: /\\brecover(?:able|ed|y)?\\b/i, money: [F.recoverable] },\n  { name: 'capital tied up', re: /\\btied\\b|\\bat cost\\b/i, money: [F.capital_tied] },\n  { name: 'revenue given up', re: /\\b(given up|forgone|foregone|forfeit(?:ed)?|lost revenue|revenue lost)\\b/i, money: [F.revenue_given_up] },\n  { name: 'markdown cap', re: /\\b(allowed|permitted|capped?|capping|limit(?:ed|s)?|ceiling|per run|in one run|single run)\\b/i, pct: [F.max_markdown_pct] },\n  { name: 'largest markdown', re: /\\b(largest|highest|biggest|deepest|steepest|maximum)\\b/i, pct: [F.top_markdown_pcts[0]] },\n  { name: 'SKUs analysed', re: /\\b(analy[sz]ed|processed|assessed|covered)\\b/i, count: [F.skus] },\n  { name: 'SKUs with a price change', re: /\\b(adjust(?:ed|ment|ments)?|repric(?:ed|ing)|re-priced|price changes?|price cuts?|reductions?|reduced|changed)\\b/i, count: [F.changed_count] },\n  { name: 'clearance count', re: /\\bclearance\\b/i, count: [F.clearance] },\n  { name: 'held count', re: /\\b(held|hold|holds|unchanged)\\b/i, count: [F.hold] },\n  { name: 'review count', re: /\\breview\\b/i, count: [F.review] },\n  { name: 'approval', re: /\\bapprov(?:al|ed|e)\\b/i, count: [F.approvals_count], pct: [F.approval_threshold_pct] },\n  { name: 'markdowns', generic: true, re: /\\b(markdowns?|marked[- ]down)\\b/i,\n    count: [F.markdown, F.clearance, F.changed_count],\n    pct: [...F.top_markdown_pcts, F.avg_markdown_pct, F.approval_threshold_pct, F.max_markdown_pct] },\n];\n\nfunction verifySummary(text) {\n  const problems = [];\n  if (!text) return ['Empty LLM summary'];\n\n  // ---- Tier 0: SKU mentions ----\n  const bySku = Object.fromEntries(results.map((r) => [r.sku, r]));\n  for (const m of text.matchAll(/SKU[\\s-]?\\d+/gi)) {\n    if (!bySku[normSku(m[0])]) problems.push(`Unknown SKU mentioned: ${m[0]}`);\n  }\n  const skuPct = [\n    /(SKU[\\s-]?\\d+)(?:(?!SKU)[^.%]){0,60}?(\\d+(?:\\.\\d+)?)\\s*%/gi,                     // \"SKU-1060 ... 24.9%\"\n    /(\\d+(?:\\.\\d+)?)\\s*%\\s+(?:markdown\\s+)?(?:on|for)\\s+(?:the\\s+)?(SKU[\\s-]?\\d+)/gi,   // \"24.9% on SKU-1060\"\n  ];\n  skuPct.forEach((re, i) => {\n    for (const m of text.matchAll(re)) {\n      const sku = normSku(i === 0 ? m[1] : m[2]);\n      const pct = parseFloat(i === 0 ? m[2] : m[1]);\n      const r = bySku[sku];\n      const ctx = m[0] + text.slice(m.index + m[0].length, m.index + m[0].length + 30);\n      const isRule = (near(pct, F.approval_threshold_pct, GUARD.PCT_TOLERANCE) || near(pct, F.max_markdown_pct, GUARD.PCT_TOLERANCE))\n        && /(or more|or higher|or above|and above|threshold|cap|maximum|limit|exceed|above|over|at least|allowed|approval)/i.test(ctx);\n      if (r && !isRule && !near(pct, r.markdown_percent, GUARD.PCT_TOLERANCE)) {\n        problems.push(`${sku}: text says ${pct}% but the verified markdown is ${r.markdown_percent}%`);\n      }\n    }\n  });\n\n  // ---- Tier 0b: SKUs listed next to \"approval\" must all be flagged for approval ----\n  const skusIn = (str) => {\n    const set = new Set();\n    for (const m of str.matchAll(/SKU[\\s-]?\\d+/gi)) set.add(normSku(m[0]));\n    for (const m of str.matchAll(/(?<![\\d,.])(\\d{3,6})(?!\\d|,\\d|%|\\.\\d|\\s*SEK)/g)) {\n      if (skuDigits.has(m[1])) set.add(normSku(m[1]));\n    }\n    return set;\n  };\n  for (const sent of text.split(/(?<=[.!?])\\s+/)) {\n    if (!/\\bapprov/i.test(sent)) continue;\n    if (/\\b(no|not|none|without|never|doesn't|don't|isn't|aren't)\\b/i.test(sent)) continue;   // negated: skip\n    for (const sku of skusIn(sent)) {\n      const r = bySku[sku];\n      if (r && !r.approval_required) {\n        problems.push(`${sku} is listed as needing approval, but its markdown is ${r.markdown_percent}%, below the ${F.approval_threshold_pct}% threshold`);\n      }\n    }\n  }\n\n  // ---- Tier 1: every number must exist in the facts ----\n  const scrubbed = numberWordsToDigits(scrub(text));\n  const allowed = numbers(scrub(engine.facts_for_llm)).map((n) => n.value);\n  for (const n of numbers(scrubbed)) {\n    if (!inList(n.value, allowed, GUARD.PCT_TOLERANCE)) {\n      problems.push(`Number not in the verified facts: ${n.raw}`);\n    }\n  }\n\n  // ---- Tier 2: every number must match the topic word nearest to it ----\n  if (GUARD.CLAIM_LEVEL_CHECK) {\n    const matchesOf = (re, str) => {\n      const g = new RegExp(re.source, 'gi');\n      const out = [];\n      let m;\n      while ((m = g.exec(str)) !== null) out.push({ start: m.index, end: m.index + m[0].length });\n      return out;\n    };\n    const gapTo = (n, ms) => Math.min(...ms.map((m) => (n.start >= m.end ? n.start - m.end : m.start >= n.end ? m.start - n.end : 0)));\n\n    const clauses = scrubbed.split(/(?<=[.!?])\\s+|;\\s*|:\\s+|,\\s+|\\s+(?:and|but|while|whereas)\\s+/i).filter(Boolean);\n    for (const clause of clauses) {\n      const hits = LABELS.map((l, order) => ({ l, order, ms: matchesOf(l.re, clause) })).filter((h) => h.ms.length);\n      if (!hits.length) continue;\n      const toks = numbers(clause);\n\n      for (const n of toks) {\n        const isMoney = !n.pct && (n.value >= 1000 || /^\\s*SEK/i.test(clause.slice(n.end, n.end + 6)));\n        const kind = n.pct ? 'pct' : isMoney ? 'money' : 'count';\n        let cands = hits.filter((h) => h.l[kind]).map((h) => ({ ...h, gap: gapTo(n, h.ms) }));\n        if (!cands.length) continue;\n        // For percentages a specific topic (average, largest, approval) beats the generic \"markdown\" word\n        if (kind === 'pct' && cands.some((c) => !c.l.generic)) cands = cands.filter((c) => !c.l.generic);\n        cands.sort((x, y) => x.gap - y.gap || x.order - y.order);\n        // a percentage equal to the per-run cap, in a clause that talks about a cap or limit, is the cap (\"capped at the 25% maximum\")\n        const capCand = cands.find((c) => c.l.name === 'markdown cap');\n        const pick = kind === 'pct' && capCand && near(n.value, F.max_markdown_pct, GUARD.PCT_TOLERANCE) ? capCand : cands[0];\n        if (kind === 'count' && /\\b(top|first|largest|biggest|deepest|highest)\\s+(?:the\\s+)?$/i.test(clause.slice(0, n.start))) continue;\n        let expected = pick.l[kind];\n\n        if ((pick.l.name === 'markdowns' || pick.l.name === 'SKUs with a price change') && kind === 'count') {\n          // \"9 SKUs required a markdown of 15% or more\": a count next to the approval threshold is the approval count\n          const hasThreshold = pick.l.name === 'markdowns' && toks.some((o) => o.pct && near(o.value, F.approval_threshold_pct, GUARD.PCT_TOLERANCE));\n          if (hasThreshold) {\n            expected = [F.approvals_count];\n          } else if (/\\b(of|across|among|out of|from|in|over|covering)\\s+(?:the\\s+|all\\s+)?$/i.test(clause.slice(0, n.start))\n            && /^\\s*SKUs?\\b/i.test(clause.slice(n.end))\n            && toks.some((o) => o !== n && !o.pct && o.value < 1000 && inList(o.value, expected, 0.001))) {\n            // \"analysis of 15 SKUs resulted in 10 markdowns\": a total SKU count is fine as the population\n            expected = [...expected, F.skus];\n          }\n        }\n\n        const tol = kind === 'pct' ? GUARD.PCT_TOLERANCE : kind === 'money' ? GUARD.MONEY_TOLERANCE : 0.001;\n        if (!inList(n.value, expected, tol)) {\n          const verified = expected.filter((x) => x !== undefined).join(' or ');\n          problems.push(`Claim mismatch (${pick.l.name}): \"${clause.trim()}\": ${n.raw} but the verified value is ${verified}`);\n        }\n      }\n    }\n  }\n  return problems;\n}\n\nconst problems = verifySummary(llmText);\nconst useLlm = problems.length === 0;\nconst narrative = engine.fallback_summary;   // the Executive Summary is always the deterministic one\n\n// ------------------------------------------------------------\n// Data quality section\n// ------------------------------------------------------------\nconst rejected = validated.filter((v) => v.validation_status === 'rejected');\nconst warned = validated.filter((v) => v.validation_status === 'valid' && v.validation_warnings.length);\nconst label = (v) => v.sku || `row ${v.row_number}`;\n\nconst dq = [\n  `Rows received: ${validated.length} | Accepted: ${validated.length - rejected.length} | Rejected: ${rejected.length} | Accepted with warnings: ${warned.length}`,\n];\nif (rejected.length) {\n  dq.push('', '**Rejected rows (not priced):**', ...rejected.map((v) => `- ${label(v)}: ${v.validation_errors.join('; ')}`));\n}\nif (warned.length) {\n  dq.push('', '**Warnings (priced, please check):**', ...warned.map((v) => `- ${label(v)}: ${v.validation_warnings.join('; ')}`));\n}\ndq.push('', useLlm\n  ? '**AI commentary:** included. It was written by the local LLM and verified against the calculated figures.'\n  : `**AI commentary:** omitted. The LLM text failed verification (${problems.length} problem${problems.length === 1 ? '' : 's'}); the Executive Summary above is unaffected.`);\nif (!useLlm) dq.push(...problems.map((p) => `- ${p}`));\n\n// ------------------------------------------------------------\n// Final report\n// ------------------------------------------------------------\nconst report = [\n  '# Retail Markdown Strategy Report',\n  `_Generated ${$now.toFormat('yyyy-MM-dd HH:mm')} | All amounts in SEK_`,\n  '',\n  '## Executive Summary',\n  '',\n  narrative,\n  '',\n  ...(useLlm ? [\n    '## AI Commentary',\n    '',\n    llmText,\n    '',\n    '_Optional commentary from a local LLM, checked against the calculated figures. The Executive Summary above is the authoritative version._',\n    '',\n  ] : []),\n  '## Pricing Action Table',\n  '',\n  engine.pricing_table_md,\n  '',\n  '## Total Capital Recoverable Estimate',\n  '',\n  engine.capital_section_md,\n  '',\n  ...(policy && policy.policy_section_md ? ['## Policy Review', '', policy.policy_section_md, ''] : []),\n  '## Data Quality',\n  '',\n  dq.join('\\n'),\n  '',\n  '## Visual Chart',\n  '',\n  engine.chart_image,\n  '',\n].join('\\n');\n\nreturn [{\n  json: {\n    text: report,\n    llm_commentary: useLlm ? 'included' : 'omitted',\n    guard_problems: problems,\n    rejected_llm_commentary: useLlm ? null : llmText,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3824,
+        -208
+      ],
+      "id": "fa4a0f81-e309-4b24-aec4-1f04eeafe1be",
+      "name": "Report_Assembly_JS"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 4a: Policy audit + policy chunks for RAG\n// n8n Code node \"Policy_Audit_JS\"  |  Mode: \"Run Once for All Items\"\n// Input : one item per policy PDF (text from \"Extract_Policy_Text\"), in the order of \"Policy_Docs_JS\"\n//         Flow: Pricing_Engine_JS -> Policy_Source_JS -> Policy_Commit -> Policy_Manifest -> Policy_Docs_JS\n//               -> Fetch_Policy_PDF -> Extract_Policy_Text -> this node\n// Output: ONE item = the engine output + policy_audit + policy_rag (inputs for the embedding call)\n// The policy lives in git (PDF documents + policy-manifest.json). To change a rule, commit a new\n// version of those files; do not edit this node.\n// ============================================================\n\nconst CONFIG = {\n  MAX_NOTES: 12,  // at most this many SKUs get an AI-assisted clause review per run\n  TOP_K: 3,       // clauses retrieved per SKU (used by the next node)\n  // Lines that repeat on every PDF page and must not become part of a clause\n  PAGE_NOISE: /^(Page \\d+( of \\d+)?|Retail Pricing and Markdown Policy\\b.*)$/i,\n  // Parameters the audit needs; the manifest must provide all of them\n  REQUIRED_PARAMS: ['min_markup_by_department', 'default_min_markup', 'max_markdown_per_run', 'min_markdown_pct_to_act',\n    'approval_threshold_pct', 'price_change_cooldown_days', 'competitor_undercut', 'competitor_outlier_low',\n    'fast_mover_max_cover_weeks', 'fast_mover_max_age_days', 'clearance_min_age_days', 'clearance_min_cover_weeks',\n    'price_ending_digit'],\n};\n\nconst engine = $('Pricing_Engine_JS').first().json;\nconst results = engine.results;\nif (!Array.isArray(results)) {\n  throw new Error(\"Policy_Audit_JS expects the output of Pricing_Engine_JS (missing 'results').\");\n}\n\n// ---------- 1. Manifest: version, parameters and the list of documents ----------\nconst manifest = $('Policy_Manifest').first().json;\nconst P = manifest.parameters;\nif (!P || typeof P !== 'object') throw new Error(\"policy-manifest.json has no 'parameters' object.\");\nconst missing = CONFIG.REQUIRED_PARAMS.filter((k) => P[k] === undefined || P[k] === null);\nif (missing.length) throw new Error('policy-manifest.json is missing parameters: ' + missing.join(', '));\nconst policyVersion = String(manifest.version || 'unknown');\nconst policyCommit = ($('Policy_Commit').first().json.sha) || null;\n\nconst docs = $('Policy_Docs_JS').all().map((i) => i.json);\nconst texts = $input.all().map((i) => String((i.json || {}).text || ''));\nif (docs.length !== texts.length) {\n  throw new Error(`Expected text for ${docs.length} policy documents but got ${texts.length}. Check 'Fetch_Policy_PDF' and 'Extract_Policy_Text'.`);\n}\n\n// ---------- 2. Policy chunks: one chunk per numbered clause (\"P-4.1 Approval threshold\") ----------\nconst chunks = [];\nconst seen = new Map();\nconst docSummary = [];\ndocs.forEach((doc, di) => {\n  if (!texts[di].trim()) {\n    throw new Error(`The policy document '${doc.file}' produced no text. A scanned PDF without a text layer cannot be read.`);\n  }\n  const lines = texts[di].replace(/\\r/g, '').replace(/\\f/g, '\\n').split('\\n')\n    .map((l) => l.trim())\n    .filter((l) => l && !CONFIG.PAGE_NOISE.test(l));\n  let cur = null;\n  const found = [];\n  const flush = () => { if (cur) { chunks.push(cur); found.push(cur.id); cur = null; } };\n  for (const line of lines) {\n    const h = line.match(/^(P-\\d+\\.\\d+)\\s+(.+)$/);\n    if (h) {\n      flush();\n      if (seen.has(h[1])) throw new Error(`Clause ${h[1]} appears in both '${seen.get(h[1])}' and '${doc.file}'. Clause IDs must be unique across documents.`);\n      seen.set(h[1], doc.file);\n      cur = { id: h[1], title: h[2].trim(), text: '', doc: doc.file, doc_title: doc.title };\n      continue;\n    }\n    if (/^\\d+\\.\\s+[A-Z]/.test(line)) { flush(); continue; }   // section heading\n    if (cur) cur.text += (cur.text ? ' ' : '') + line;\n  }\n  flush();\n  if (!found.length) throw new Error(`No clauses found in '${doc.file}'. Clauses must start with an ID such as \"P-4.1 Approval threshold\".`);\n  docSummary.push({ file: doc.file, title: doc.title, clauses: found.length });\n});\nif (!chunks.length) throw new Error('No policy clauses were loaded.');\n\n// ---------- 3. Deterministic audit: recompute each rule from the policy parameters ----------\nconst round2 = (n) => Math.round(n * 100) / 100;\nconst sek = (n) => Math.round(n).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\nconst violations = [];\nconst add = (r, clause, message) => violations.push({ sku: r.sku, clause, message });\n\nfor (const r of results) {\n  const cur0 = r.current_price_sek, rec = r.recommended_price_sek, cost = r.cost_price_sek;\n  const changed = rec < cur0;\n  const md = ((cur0 - rec) / cur0) * 100;\n  const markup = P.min_markup_by_department[r.department] ?? P.default_min_markup;\n  const floor = round2(cost * (1 + markup));\n\n  if (Math.abs((r.margin_floor_sek ?? floor) - floor) > 0.011) {\n    add(r, 'P-2.1', `engine floor ${sek(r.margin_floor_sek)} SEK differs from the policy floor ${sek(floor)} SEK`);\n  }\n  if (rec > cur0) add(r, 'P-3.4', `recommended price ${sek(rec)} is above the current price ${sek(cur0)}`);\n  if (changed) {\n    if (rec + 0.001 < floor) add(r, 'P-2.1', `recommended price ${sek(rec)} is below the policy floor ${sek(floor)}`);\n    if (md > P.max_markdown_per_run * 100 + 0.001) add(r, 'P-3.1', `markdown ${md.toFixed(1)}% is above the ${P.max_markdown_per_run * 100}% maximum`);\n    if (md < P.min_markdown_pct_to_act - 0.001) add(r, 'P-3.2', `markdown ${md.toFixed(1)}% is below the minimum step`);\n    if (Math.round(rec) % 10 !== P.price_ending_digit) add(r, 'P-3.3', `price ${sek(rec)} does not end in ${P.price_ending_digit}`);\n    const cover = r.weeks_of_cover === null || r.weeks_of_cover === undefined ? Infinity : r.weeks_of_cover;\n    if (cover <= P.fast_mover_max_cover_weeks && r.days_in_stock <= P.fast_mover_max_age_days) {\n      add(r, 'P-6.1', 'fast mover was marked down');\n    }\n  }\n  const expectApproval = md >= P.approval_threshold_pct - 1e-9;\n  if (Boolean(r.approval_required) !== expectApproval) {\n    add(r, 'P-4.1', `approval flag is ${r.approval_required} but a ${md.toFixed(1)}% markdown ${expectApproval ? 'requires' : 'does not require'} approval`);\n  }\n  const coverC = r.weeks_of_cover === null || r.weeks_of_cover === undefined ? Infinity : r.weeks_of_cover;\n  const expectClearance = changed && r.days_in_stock >= P.clearance_min_age_days && coverC >= P.clearance_min_cover_weeks;\n  if ((r.action === 'CLEARANCE') !== expectClearance) {\n    add(r, 'P-8.1', `action is ${r.action} but the clearance criteria ${expectClearance ? 'are' : 'are not'} met`);\n  }\n}\n\n// ---------- 4. Which SKUs get a clause review ----------\nconst violationsBySku = {};\nviolations.forEach((v) => { (violationsBySku[v.sku] = violationsBySku[v.sku] || []).push(v); });\nconst score = (r) => (violationsBySku[r.sku] ? 1000 : 0) + (r.action === 'REVIEW' ? 500 : 0)\n  + (r.action === 'CLEARANCE' ? 300 : 0) + (r.approval_required ? 100 : 0) + r.markdown_percent;\nconst flaggedAll = results\n  .filter((r) => violationsBySku[r.sku] || r.action === 'REVIEW' || r.recommended_price_sek < r.current_price_sek)\n  .sort((a, b) => score(b) - score(a));\nconst flaggedSel = flaggedAll.slice(0, CONFIG.MAX_NOTES);\n\nconst flagged = flaggedSel.map((r) => {\n  const stockAtCost = r.units_in_stock * r.cost_price_sek;\n  const cover = r.weeks_of_cover === null || r.weeks_of_cover === undefined ? 'no recent sales' : `${r.weeks_of_cover} weeks of cover`;\n  const summary =\n    `${r.sku} (${r.product_name}), department ${r.department}, category ${r.category}. Action ${r.action}. ` +\n    `Price ${sek(r.current_price_sek)} to ${sek(r.recommended_price_sek)} SEK, markdown ${r.markdown_percent}%. ` +\n    `${r.days_in_stock} days in stock, ${cover}. Stock at cost ${sek(stockAtCost)} SEK. ` +\n    `Needs approval at 15% or more: ${r.approval_required ? 'yes' : 'no'}.`;\n  const query = `${r.department} ${r.category} ${r.product_name} ${r.action} markdown ${r.approval_required ? 'approval' : ''} ${stockAtCost > 150000 ? 'large stock exposure' : ''}`;\n  return { sku: r.sku, department: r.department, action: r.action, approval_required: r.approval_required, summary, query: query.replace(/\\s+/g, ' ').trim() };\n});\n\nconst embedInputs = [\n  ...chunks.map((c) => `search_document: ${c.id} ${c.title}. ${c.text}`),\n  ...flagged.map((f) => `search_query: ${f.query}`),\n];\n\nreturn [{\n  json: {\n    ...engine,\n    policy_audit: {\n      policy_version: policyVersion,\n      checked: results.length,\n      violations,\n      passed: violations.length === 0,\n      policy_commit: policyCommit,\n      policy_docs: docs.length,\n      documents: docSummary,\n    },\n    policy_rag: {\n      n_chunks: chunks.length,\n      chunks,\n      flagged,\n      n_flagged_total: flaggedAll.length,\n      embed_inputs: embedInputs,\n    },\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        -208
+      ],
+      "id": "92aa8477-c1ce-4634-bafe-89f1f635b821",
+      "name": "Policy_Audit_JS"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', input: $json.policy_rag.embed_inputs }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        -208
+      ],
+      "id": "6ebd8963-8e98-4238-bddd-baa04fb6e7a7",
+      "name": "Embed_Policy",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 4b: Retrieve the relevant policy clauses for each flagged SKU\n// n8n Code node \"Policy_Retrieve_JS\"  |  Mode: \"Run Once for All Items\"\n// Input : the response of the \"Embed_Policy\" HTTP node (Ollama /api/embed)\n// Output: one item per flagged SKU with a ready-to-use LLM prompt (or one \"none\" item)\n// ============================================================\n\nconst TOP_K = 3;\nconst ctx = $('Policy_Audit_JS').first().json;\nconst { chunks, flagged, n_chunks } = ctx.policy_rag;\nconst resp = $input.first().json || {};\nconst emb = resp.embeddings;\n\nconst NONE_PROMPT = 'Reply with exactly: No policy issue.';\nconst none = (reason) => [{ json: { sku: null, none: true, rag_unavailable: reason || null, prompt: NONE_PROMPT, retrieved: [], allowed_text: '' } }];\n\nif (!flagged.length) return none(null);\nif (!Array.isArray(emb) || emb.length !== n_chunks + flagged.length) {\n  // Graceful degradation: the report is still produced, without clause review\n  return none(resp.error ? `embedding call failed: ${JSON.stringify(resp.error).slice(0, 120)}` : 'embedding response had an unexpected shape');\n}\n\nconst cos = (a, b) => {\n  let dot = 0, na = 0, nb = 0;\n  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }\n  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);\n};\n\nconst chunkVecs = emb.slice(0, n_chunks);\nconst runDate = $now.toFormat('yyyy-MM-dd');\n\nreturn flagged.map((f, i) => {\n  const q = emb[n_chunks + i];\n  const scored = chunks.map((c, j) => ({ c, j })).filter(({ c }) => {\n    // metadata filter: a clause that says \"Applies to: <departments>\" is only used for those departments\n    const m = c.text.match(/^Applies to:\\s*([^.]*)\\./i);\n    if (!m || /all departments/i.test(m[1])) return true;\n    return m[1].toLowerCase().split(/,|\\band\\b/).map((x) => x.trim()).includes(f.department.toLowerCase());\n  }).map(({ c, j }) => {\n    let s = cos(q, chunkVecs[j]);\n    const t = (c.title + ' ' + c.text).toLowerCase();\n    if (t.includes(f.department.toLowerCase())) s += 0.08;                       // clause names this department\n    if (t.includes(f.action.toLowerCase())) s += 0.08;                           // clause names this action\n    if (f.approval_required && c.id.startsWith('P-4')) s += 0.05;                // approvals section\n    return { c, s };\n  }).sort((a, b) => b.s - a.s).slice(0, TOP_K);\n\n  const retrieved = scored.map(({ c, s }) => ({ id: c.id, title: c.title, text: c.text, score: Math.round(s * 1000) / 1000 }));\n  const clauseBlock = retrieved.map((c) => `[${c.id}] ${c.title}: ${c.text}`).join('\\n');\n\n  const prompt = [\n    'You are a pricing policy reviewer. Use ONLY the policy clauses below.',\n    '',\n    `RUN DATE: ${runDate}`,\n    'DECISION:',\n    f.summary,\n    '',\n    'POLICY CLAUSES:',\n    clauseBlock,\n    '',\n    'TASK: In one or two sentences, say which clause (if any) requires a human action for this decision, and what the action is.',\n    'Cite clause IDs in square brackets, for example [P-4.1]. Never mention a clause that is not listed above.',\n    'Use only numbers that appear above. If nothing needs attention, reply exactly: No policy issue.',\n  ].join('\\n');\n\n  return { json: { sku: f.sku, none: false, prompt, retrieved, allowed_text: `${runDate} ${f.summary} ${clauseBlock}` } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        -208
+      ],
+      "id": "bb3b1674-f373-4997-b5a5-308247d2d43f",
+      "name": "Policy_Retrieve_JS"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "messages": {
+          "messageValues": []
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        2688,
+        -208
+      ],
+      "id": "9f408425-da09-4ac6-859b-7bf8fbec20be",
+      "name": "Policy_Notes_Chain",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        2768,
+        32
+      ],
+      "id": "f506e180-7add-47ce-8f1f-4f079d1af429",
+      "name": "Ollama Chat Model (policy)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "RiCrKekTghosCpGv",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 4c: Verify the AI clause notes and build the \"Policy Review\" section\n// n8n Code node \"Policy_Collect_JS\"  |  Mode: \"Run Once for All Items\"\n// Input : outputs of \"Policy_Notes_Chain\" (one item per retrieved SKU, same order)\n// Output: ONE item = the engine output + policy_audit + policy_notes + policy_section_md\n// ============================================================\n\nconst ctx = $('Policy_Audit_JS').first().json;\nconst retr = $('Policy_Retrieve_JS').all().map((i) => i.json);\nconst outs = $input.all().map((i) => i.json);\nconst results = ctx.policy_rag ? ctx.results : [];\nconst audit = ctx.policy_audit;\nconst clean = (s) => String(s).replace(/\\|/g, '/').replace(/\\s+/g, ' ').trim();\n\n// ---------- helpers ----------\nconst productNames = ctx.results.map((r) => r.product_name).sort((a, b) => b.length - a.length);\nconst esc = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst scrub = (s) => {\n  let t = s;\n  for (const n of productNames) t = t.replace(new RegExp(esc(n), 'gi'), ' PRODUCT ');\n  return t.replace(/P-\\d+\\.\\d+/g, ' CLAUSE ').replace(/SKU[\\s-]?\\d+/gi, ' SKU ').replace(/\\d{4}-\\d{2}-\\d{2}/g, ' DATE ');\n};\nconst nums = (s) => (scrub(s).match(/\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?/g) || []).map((x) => parseFloat(x.replace(/,/g, '')));\n\n// ---------- verify each note ----------\nconst notes = [];\nconst unavailable = retr.length && retr[0].rag_unavailable;\n\nif (!unavailable) {\n  retr.forEach((r, i) => {\n    if (r.none) return;\n    const raw = String((outs[i] && outs[i].text) || '').trim();\n    const ids = [...new Set(raw.match(/P-\\d+\\.\\d+/g) || [])];\n    const allowedIds = r.retrieved.map((c) => c.id);\n    const allowedNums = new Set(nums(r.allowed_text));\n    const problems = [];\n\n    if (!raw) problems.push('no model output');\n    const isNone = /^no policy issue\\.?$/i.test(raw);\n    if (raw && !isNone) {\n      if (!ids.length) problems.push('no clause cited');\n      ids.filter((id) => !allowedIds.includes(id)).forEach((id) => problems.push(`cites ${id}, which was not retrieved`));\n      nums(raw).filter((n) => !allowedNums.has(n)).forEach((n) => problems.push(`number ${n} not in the decision or clauses`));\n      if (raw.length > 450) problems.push('too long');\n    }\n\n    if (problems.length) {\n      notes.push({\n        sku: r.sku, source: 'fallback', problems, retrieved: allowedIds,\n        text: 'Relevant clauses: ' + r.retrieved.map((c) => `[${c.id}] ${c.title}`).join('; ') + '.',\n      });\n    } else {\n      notes.push({ sku: r.sku, source: 'llm', problems: [], retrieved: allowedIds, text: isNone ? 'No policy issue.' : raw });\n    }\n  });\n}\n\n// ---------- Policy Review section ----------\nconst lines = [];\nlines.push(`**Policy audit (policy v${audit.policy_version}, commit ${audit.policy_commit ? String(audit.policy_commit).slice(0, 7) : 'unknown'}, ${audit.policy_docs} documents):** ${audit.checked} SKU decisions recomputed against the policy parameters. ` +\n  (audit.passed ? 'No violations.' : `${audit.violations.length} violation${audit.violations.length === 1 ? '' : 's'}.`));\nif (!audit.passed) {\n  lines.push('', ...audit.violations.map((v) => `- ${v.sku}, [${v.clause}]: ${v.message}`));\n}\n\nlines.push('');\nif (unavailable) {\n  lines.push(`**Clause review:** unavailable this run (${unavailable}). The policy audit above is unaffected.`);\n} else if (!notes.length) {\n  lines.push('**Clause review:** no SKU needed a clause review.');\n} else {\n  const total = ctx.policy_rag.n_flagged_total;\n  const okCount = notes.filter((n) => n.source === 'llm').length;\n  lines.push(`**Clause review (AI-assisted, citations verified):** ${notes.length} of ${total} flagged SKUs reviewed; ${okCount} written by the local LLM, ${notes.length - okCount} replaced by the list of retrieved clauses because the text failed verification.`);\n  lines.push('', '| SKU | Action | Clauses retrieved | Policy note |', '| --- | --- | --- | --- |');\n  for (const n of notes) {\n    const r = ctx.results.find((x) => x.sku === n.sku) || {};\n    lines.push(`| ${n.sku} | ${r.action || ''} | ${n.retrieved.join(', ')} | ${clean(n.text)}${n.source === 'fallback' ? ' _(auto)_' : ''} |`);\n  }\n}\n\nconst { policy_rag, ...rest } = ctx;   // drop the bulky embedding inputs\nreturn [{\n  json: {\n    ...rest,\n    policy_notes: notes,\n    policy_rag_summary: { n_chunks: policy_rag.n_chunks, n_flagged_total: policy_rag.n_flagged_total, reviewed: notes.length },\n    policy_section_md: lines.join('\\n'),\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3040,
+        -208
+      ],
+      "id": "400eafb8-059a-4ffd-b1fb-538330fb0578",
+      "name": "Policy_Collect_JS"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "file",
+        "owner": {
+          "__rl": true,
+          "value": "thivakar-allimuthu",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "enterprise-ai-readiness-framework",
+          "mode": "list",
+          "cachedResultName": "enterprise-ai-readiness-framework",
+          "cachedResultUrl": "https://github.com/thivakar-allimuthu/enterprise-ai-readiness-framework"
+        },
+        "filePath": "=case-studies/Autonomous-Pricing-Markdown/markdown_strategy_{{ $now.toFormat('yyyy-MM-dd_HH-mm-ss') }}.md",
+        "fileContent": "={{ $json.text }}",
+        "commitMessage": "feat: automated retail markdown strategy update [ci skip]"
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        3968,
+        -400
+      ],
+      "id": "3ebf7ba5-7b3a-466d-a4ae-e890f7102310",
+      "name": "Create MD File",
+      "webhookId": "bd1fb6f8-e78e-4dd9-92b9-bf79e97455f4",
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "zhaBEvTqapMLkGsn",
+          "name": "GitHub account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "file",
+        "operation": "edit",
+        "owner": {
+          "__rl": true,
+          "value": "thivakar-allimuthu",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "enterprise-ai-readiness-framework",
+          "mode": "list",
+          "cachedResultName": "enterprise-ai-readiness-framework",
+          "cachedResultUrl": "https://github.com/thivakar-allimuthu/enterprise-ai-readiness-framework"
+        },
+        "filePath": "=case-studies/autonomous-pricing-markdown/index.html",
+        "fileContent": "={{ $json.html }}",
+        "commitMessage": "feat: update latest markdown report [ci skip]"
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        4048,
+        48
+      ],
+      "id": "c65e0885-6c8e-46b7-8a19-ff4860df29da",
+      "name": "Create HTML File",
+      "webhookId": "bd1fb6f8-e78e-4dd9-92b9-bf79e97455f4",
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "zhaBEvTqapMLkGsn",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Report_HTML_JS - interactive HTML report (no external libraries)\n// n8n Code node | Mode: \"Run Once for All Items\"\n// Place it AFTER \"Report_Assembly_JS\", in parallel with \"Create a file\".\n// Output: { html } -> commit with a second GitHub \"Create a file\" node\n// (fileContent = {{ $json.html }}, filePath ending in .html).\n// ============================================================\n\nconst engine = $('Pricing_Engine_JS').first().json;\nconst F = engine.facts;\nconst R = engine.results;\nconst validated = $('Validate & Normalise').all().map((i) => i.json);\nlet policyMd = '';\ntry { policyMd = $('Policy_Collect_JS').first().json.policy_section_md || ''; } catch (e) { policyMd = ''; }\nlet llmStatus = 'omitted';\ntry { llmStatus = $('Report_Assembly_JS').first().json.llm_commentary || 'omitted'; } catch (e) { /* optional */ }\nlet graph = { available: false };\ntry { graph = $('Graph_Sync_JS').first().json.graph || graph; } catch (e) { /* graph is optional */ }\nconst meta = {};\nvalidated.forEach((v) => { meta[v.sku] = v; });\n\nconst esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst sek = (n) => Math.round(n).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, '\\u00a0');\nconst md = (s) => esc(s).replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>').replace(/_(.+?)_/g, '<i>$1</i>');\n\n// ---------- KPI cards ----------\nconst kpi = (label, value, sub) =>\n  '<div class=\"kpi\"><div class=\"kl\">' + label + '</div><div class=\"kv\">' + value + '</div><div class=\"ks\">' + sub + '</div></div>';\nconst kpis = [\n  kpi('SKUs analysed', F.skus, F.changed_count + ' with a price change'),\n  kpi('Needs approval', F.approvals_count, 'markdown of ' + F.approval_threshold_pct + '% or more'),\n  kpi('Average markdown', F.avg_markdown_pct + '%', 'largest ' + F.top_markdown_pcts[0] + '%'),\n  kpi('Capital tied up', sek(F.capital_tied) + ' SEK', 'at cost, marked-down SKUs'),\n  kpi('Recoverable', sek(F.recoverable) + ' SEK', 'at recommended prices'),\n  kpi('Revenue given up', sek(F.revenue_given_up) + ' SEK', 'versus current prices'),\n].join('');\n\n// ---------- action mix bar ----------\nconst mix = [['HOLD', F.hold], ['MARKDOWN', F.markdown], ['CLEARANCE', F.clearance], ['REVIEW', F.review]]\n  .filter((m) => m[1] > 0)\n  .map((m) => '<div class=\"seg a-' + m[0] + '\" style=\"flex:' + m[1] + '\" title=\"' + m[0] + '\">' + m[0].charAt(0) + m[0].slice(1).toLowerCase() + ' ' + m[1] + '</div>')\n  .join('');\n\n// ---------- revenue given up by department ----------\nconst dep = {};\nR.forEach((r) => {\n  const d = dep[r.department] || (dep[r.department] = { n: 0, changed: 0, given: 0, sum: 0 });\n  d.n++;\n  if (r.markdown_percent > 0) {\n    d.changed++;\n    d.sum += r.markdown_percent;\n    d.given += (r.current_price_sek - r.recommended_price_sek) * r.units_in_stock;\n  }\n});\nconst deps = Object.entries(dep).sort((a, b) => b[1].given - a[1].given);\nconst maxGiven = Math.max(...deps.map((d) => d[1].given), 1);\nconst depHtml = deps.map(([name, d]) =>\n  '<div class=\"drow\"><div class=\"dn\">' + esc(name) + '</div><div class=\"dbar\"><span style=\"width:' + (d.given / maxGiven * 100).toFixed(1) + '%\"></span></div>' +\n  '<div class=\"dv\">' + sek(d.given) + ' SEK<small>avg ' + (d.changed ? (d.sum / d.changed).toFixed(1) : '0') + '% on ' + d.changed + ' of ' + d.n + ' SKUs</small></div></div>'\n).join('');\n\n// ---------- policy section (markdown -> html) ----------\nlet policyHtml = '';\nif (policyMd) {\n  const lines = policyMd.split('\\n').filter((l) => l.trim());\n  const tbl = lines.filter((l) => l.trim().startsWith('|') && !/^\\|\\s*-/.test(l.trim()));\n  const paras = lines.filter((l) => !l.trim().startsWith('|')).map((l) => '<p>' + md(l) + '</p>').join('');\n  const rows = tbl.map((l, i) => {\n    const c = l.trim().replace(/^\\||\\|$/g, '').split('|').map((x) => x.trim());\n    const tag = i === 0 ? 'th' : 'td';\n    return '<tr>' + c.map((x) => '<' + tag + '>' + md(x) + '</' + tag + '>').join('') + '</tr>';\n  }).join('');\n  policyHtml = paras + (rows ? '<div class=\"scroll\"><table class=\"plain\">' + rows + '</table></div>' : '');\n}\n\n// ---------- data quality ----------\nconst rejected = validated.filter((v) => v.validation_status !== 'valid').length;\nconst warned = validated.filter((v) => v.validation_status === 'valid' && (v.validation_warnings || []).length);\nconst dqHtml = '<p>Received <b>' + validated.length + '</b> | accepted <b>' + (validated.length - rejected) + '</b> | rejected <b>' + rejected +\n  '</b> | with warnings <b>' + warned.length + '</b></p>' +\n  (warned.length ? '<ul>' + warned.map((v) => '<li><b>' + esc(v.sku) + '</b>: ' + esc(v.validation_warnings.join('; ')) + '</li>').join('') + '</ul>' : '');\n\n// ---------- knowledge graph insights ----------\nconst th = (h) => '<tr>' + h.map((x) => '<th>' + x + '</th>').join('') + '</tr>';\nconst tbl = (head, body, empty) => body ? '<div class=\"scroll\"><table class=\"plain\">' + th(head) + body + '</table></div>' : '<p class=\"mu\">' + empty + '</p>';\nconst vr = (x) => esc(x.product) + ' <span class=\"var\">' + esc(x.variant) + '</span>';\nlet graphHtml = '<p>Graph not available for this run' + (graph.error ? ' (' + esc(graph.error) + ')' : '') + '. The decisions above do not depend on it.</p>';\nif (graph.available) {\n  const chips = graph.nodes.map((n) => '<span class=\"chip\">' + esc(n.label) + ' <b>' + n.n + '</b></span>').join('');\n  const reb = graph.rebalance.map((x) => '<tr><td>' + vr(x) + '</td><td>' + esc(x.surplus_store) + ': ' + x.surplus_cover + ' wk cover, -' + x.markdown + '%</td><td>' + esc(x.short_store) + ': ' + x.short_cover + ' wk cover</td><td class=\"num\">' + sek(x.revenue_given_up) + '</td></tr>').join('');\n  const gap = graph.price_gap.map((x) => '<tr><td>' + vr(x) + '</td><td class=\"num\">' + sek(x.lo) + '</td><td class=\"num\">' + sek(x.hi) + '</td><td class=\"num\">' + x.gap_pct + '%</td><td>' + esc((x.offers || []).join(', ')) + '</td></tr>').join('');\n  const maxC = Math.max(...graph.clauses.map((c) => c.decisions), 1);\n  const cl = graph.clauses.map((c) => '<tr><td><b>' + esc(c.clause) + '</b></td><td>' + esc(c.title) + '</td><td><span class=\"mbar\"><i style=\"width:' + (c.decisions / maxC * 100).toFixed(0) + '%\"></i></span>' + c.decisions + '</td><td class=\"num\">' + sek(c.revenue_given_up) + '</td></tr>').join('');\n  const maxS = Math.max(...graph.stores.map((x) => x.revenue_given_up), 1);\n  const stores = graph.stores.map((x) => '<div class=\"drow\"><div class=\"dn\">' + esc(x.store) + '</div><div class=\"dbar\"><span style=\"width:' + (x.revenue_given_up / maxS * 100).toFixed(1) + '%\"></span></div><div class=\"dv\">' + sek(x.revenue_given_up) + ' SEK<small>avg ' + x.avg_markdown + '% on ' + x.skus + ' SKUs</small></div></div>').join('');\n  graphHtml = '<p class=\"mu\">Run ' + esc(graph.run_id) + ' | ' + graph.node_total + ' nodes and ' + graph.relationships + ' relationships in Neo4j</p><div>' + chips + '</div>' +\n    '<h3>Move stock before you discount</h3><p class=\"mu\">The same variant is marked down 15% or more in one store while another store is nearly sold out.</p>' +\n    tbl(['Product', 'Surplus store', 'Short store', 'Revenue given up (SEK)'], reb, 'No transfer opportunities in this run.') +\n    '<h3>Same product, different prices</h3><p class=\"mu\">One variant (one GTIN) carries different current prices in different stores.</p>' +\n    tbl(['Product', 'Lowest', 'Highest', 'Gap', 'Store prices'], gap, 'Prices are consistent across stores.') +\n    '<h3>Policy clauses behind the decisions</h3>' + tbl(['Clause', 'Rule', 'Decisions', 'Revenue given up (SEK)'], cl, 'No clause links.') +\n    '<h3>Revenue given up by store</h3>' + stores;\n}\n\nconst data = R.map((r) => ({\n  variant: (meta[r.sku] || {}).variant || '', store: (meta[r.sku] || {}).store || '', category: r.category,\n  subcategory: (meta[r.sku] || {}).subcategory || '', clauses: (graph.lineage || {})[r.sku] || [],\n  sku: r.sku, product_name: r.product_name, department: r.department, action: r.action,\n  current_price_sek: r.current_price_sek, recommended_price_sek: r.recommended_price_sek,\n  markdown_percent: r.markdown_percent, profit_margin_percent: r.profit_margin_percent,\n  weeks_of_cover: r.weeks_of_cover, days_in_stock: r.days_in_stock,\n  approval_required: !!r.approval_required, reasons: r.reasons || [],\n}));\n\nconst TEMPLATE = String.raw`<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Retail Markdown Strategy Report</title>\n<style>\n:root{--bg:#f6f5f1;--card:#fff;--tx:#1f1e1c;--mu:#6b6a64;--bd:#e3e1d9;--hold:#8a8880;--markdown:#c9851a;--clearance:#d0502a;--review:#6a5acd;--bar:#2f7d6b}\n@media(prefers-color-scheme:dark){:root{--bg:#161614;--card:#211f1d;--tx:#eceae3;--mu:#a09e96;--bd:#35332f;--hold:#9a988f;--markdown:#e0a23d;--clearance:#e87a57;--review:#9d90f0;--bar:#4fb59d}}\n*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 system-ui,-apple-system,\"Segoe UI\",sans-serif}\n.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}\nh1{font-size:24px;font-weight:600;margin:0}h2{font-size:17px;font-weight:600;margin:0 0 12px}\n.sub{color:var(--mu);font-size:13px;margin:4px 0 22px}\n.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:18px 20px;margin-bottom:18px}\n.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px}\n.kpi{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px 16px}\n.kl{font-size:12px;color:var(--mu)}.kv{font-size:22px;font-weight:600;margin:2px 0}.ks{font-size:12px;color:var(--mu)}\n.sum{margin:0;color:var(--tx)}\n.mix{display:flex;gap:3px;height:34px;margin-top:6px}\n.seg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;border-radius:5px;min-width:0;overflow:hidden;white-space:nowrap}\n.a-HOLD{background:var(--hold)}.a-MARKDOWN{background:var(--markdown)}.a-CLEARANCE{background:var(--clearance)}.a-REVIEW{background:var(--review)}\n.drow{display:grid;grid-template-columns:110px 1fr 230px;gap:12px;align-items:center;padding:6px 0}\n.dn{font-weight:500}.dbar{background:var(--bd);height:12px;border-radius:6px;overflow:hidden}.dbar span{display:block;height:100%;background:var(--bar);border-radius:6px}\n.dv{font-size:13px;text-align:right}.dv small{display:block;color:var(--mu);font-size:11.5px}\n.tools{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}\n.tools button{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:16px;padding:5px 13px;font-size:13px;cursor:pointer}\n.tools button.on{background:var(--tx);color:var(--bg);border-color:var(--tx)}\n.tools input{margin-left:auto;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px;min-width:200px}\n.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13.5px}\nth{text-align:left;font-weight:600;font-size:12px;color:var(--mu);border-bottom:1px solid var(--bd);padding:8px 8px;white-space:nowrap;cursor:pointer;user-select:none}\ntd{padding:8px;border-bottom:1px solid var(--bd);vertical-align:middle}.num{text-align:right;font-variant-numeric:tabular-nums}\ntr.row:hover{background:rgba(127,127,127,.08);cursor:pointer}tr.det td{background:rgba(127,127,127,.06);color:var(--mu);font-size:13px}\n.badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:600;color:#fff}\n.flag{color:var(--clearance);font-weight:600;margin-left:6px}\n.mbar{display:inline-block;width:60px;height:7px;background:var(--bd);border-radius:4px;margin-right:8px;vertical-align:middle;overflow:hidden}.mbar i{display:block;height:100%;background:var(--markdown)}\n.chip{display:inline-block;border:1px solid var(--bd);border-radius:12px;padding:2px 10px;font-size:12px;margin:0 6px 6px 0}.mu{color:var(--mu);font-size:13px;margin:4px 0 8px}h3{font-size:14px;margin:20px 0 2px}.var{color:var(--mu);font-size:12px}\n#t td:first-child{white-space:nowrap}\ntable.plain td,table.plain th{cursor:default}.foot{color:var(--mu);font-size:12px;margin-top:22px}\n@media(max-width:700px){.drow{grid-template-columns:90px 1fr}.dv{grid-column:1/-1;text-align:left}}\n</style></head><body><div class=\"wrap\">\n<h1>Retail Markdown Strategy Report</h1>\n<div class=\"sub\">Generated %%DATE%% | all amounts in SEK</div>\n<div class=\"kpis\">%%KPIS%%</div>\n<div class=\"card\"><h2>Executive summary</h2><p class=\"sum\">%%SUMMARY%%</p></div>\n<div class=\"card\"><h2>Action mix</h2><div class=\"mix\">%%MIX%%</div></div>\n<div class=\"card\"><h2>Revenue given up by department</h2>%%DEPS%%</div>\n<div class=\"card\"><h2>Pricing actions</h2>\n<div class=\"tools\" id=\"tools\"></div>\n<div class=\"scroll\"><table id=\"t\"><thead></thead><tbody></tbody></table></div></div>\n<div class=\"card\"><h2>Knowledge graph insights</h2>%%GRAPH%%</div>\n<div class=\"card\"><h2>Policy review</h2>%%POLICY%%</div>\n<div class=\"card\"><h2>Data quality</h2>%%DQ%%</div>\n<div class=\"foot\">Prices are recommendations; markdowns marked with a flag need human approval. AI commentary: %%LLM%%. The figures above are calculated, not generated.</div>\n</div>\n<script>\nvar D=%%DATA%%;\nvar flt=\"ALL\",q=\"\",key=\"markdown_percent\",dir=-1,open={};\nvar cols=[[\"sku\",\"SKU\"],[\"product_name\",\"Product\"],[\"store\",\"Store\"],[\"department\",\"Department\"],[\"action\",\"Action\"],[\"current_price_sek\",\"Current\"],[\"recommended_price_sek\",\"Recommended\"],[\"markdown_percent\",\"Markdown\"],[\"profit_margin_percent\",\"Margin\"],[\"weeks_of_cover\",\"Cover (wk)\"],[\"days_in_stock\",\"Days\"]];\nvar numeric={current_price_sek:1,recommended_price_sek:1,markdown_percent:1,profit_margin_percent:1,weeks_of_cover:1,days_in_stock:1};\nfunction fmt(n){return Math.round(n).toLocaleString(\"en-US\").replace(/,/g,\"\\u00a0\")}\nfunction esc(s){return String(s).replace(/[&<>\"]/g,function(c){return {\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",'\"':\"&quot;\"}[c]})}\nvar filters=[\"ALL\",\"HOLD\",\"MARKDOWN\",\"CLEARANCE\",\"REVIEW\",\"APPROVAL\"];\nfunction count(f){return D.filter(function(r){return pass(r,f)}).length}\nfunction pass(r,f){return f===\"ALL\"||(f===\"APPROVAL\"?r.approval_required:r.action===f)}\nfunction tools(){var h=\"\";filters.forEach(function(f){h+='<button data-f=\"'+f+'\" class=\"'+(f===flt?\"on\":\"\")+'\">'+(f===\"APPROVAL\"?\"Needs approval\":f.charAt(0)+f.slice(1).toLowerCase())+\" \"+count(f)+\"</button>\"});\nh+='<input id=\"q\" placeholder=\"Search SKU, product, department\" value=\"'+esc(q)+'\">';document.getElementById(\"tools\").innerHTML=h}\nfunction head(){var h=\"<tr>\";cols.forEach(function(c){var a=key===c[0]?(dir>0?\" \\u25B2\":\" \\u25BC\"):\"\";h+='<th data-k=\"'+c[0]+'\" class=\"'+(numeric[c[0]]?\"num\":\"\")+'\">'+c[1]+a+\"</th>\"});\ndocument.querySelector(\"#t thead\").innerHTML=h+\"</tr>\"}\nfunction body(){var s=q.toLowerCase();var rows=D.filter(function(r){return pass(r,flt)&&(!s||(r.sku+\" \"+r.product_name+\" \"+r.variant+\" \"+r.store+\" \"+r.department).toLowerCase().indexOf(s)>-1)});\nrows.sort(function(a,b){var x=a[key],y=b[key];return (typeof x===\"string\"?x.localeCompare(y):x-y)*dir});\nvar h=\"\";rows.forEach(function(r){var m=r.markdown_percent;\nh+='<tr class=\"row\" data-s=\"'+r.sku+'\"><td>'+r.sku+'</td><td>'+esc(r.product_name)+(r.variant?' <span class=\"var\">'+esc(r.variant)+'</span>':'')+'</td><td>'+esc(r.store)+'</td><td>'+esc(r.department)+'</td><td><span class=\"badge a-'+r.action+'\">'+r.action+\"</span>\"+(r.approval_required?'<span class=\"flag\" title=\"Needs approval\">&#9873;</span>':\"\")+\"</td>\"+\n'<td class=\"num\">'+fmt(r.current_price_sek)+'</td><td class=\"num\">'+fmt(r.recommended_price_sek)+'</td><td class=\"num\"><span class=\"mbar\"><i style=\"width:'+Math.min(m*4,100)+'%\"></i></span>'+m+\"%</td>\"+\n'<td class=\"num\">'+r.profit_margin_percent+'%</td><td class=\"num\">'+r.weeks_of_cover+'</td><td class=\"num\">'+r.days_in_stock+\"</td></tr>\";\nif(open[r.sku])h+='<tr class=\"det\"><td colspan=\"11\">'+detail(r)+\"</td></tr>\"});\ndocument.querySelector(\"#t tbody\").innerHTML=h||'<tr><td colspan=\"11\">No matching SKUs</td></tr>'}\nfunction detail(r){\nvar path=[r.department,r.category,r.subcategory,r.product_name,r.variant,r.sku+(r.store?\" @ \"+r.store:\"\")].filter(Boolean).map(esc).join(\" &rsaquo; \");\nvar cl=r.clauses.length?r.clauses.map(esc).join(\", \"):\"none\";\nvar sib=D.filter(function(x){return x.product_name===r.product_name&&x.variant===r.variant&&x.sku!==r.sku}).map(function(x){return esc(x.store)+\" \"+x.action+\" (\"+x.weeks_of_cover+\" wk cover)\"}).join(\", \")||\"not stocked elsewhere\";\nreturn \"<div><b>Path in the graph:</b> \"+path+\" &rarr; \"+esc(r.action)+\" &rarr; clauses \"+cl+\"</div><div><b>Why:</b> \"+esc(r.reasons.join(\" | \"))+\"</div><div><b>Same variant elsewhere:</b> \"+sib+\"</div>\"}\nfunction draw(){tools();head();body()}\ndocument.addEventListener(\"click\",function(e){var b=e.target.closest(\"button[data-f]\");if(b){flt=b.dataset.f;draw();return}\nvar th=e.target.closest(\"th[data-k]\");if(th){var k=th.dataset.k;dir=key===k?-dir:(numeric[k]?-1:1);key=k;head();body();return}\nvar tr=e.target.closest(\"tr.row\");if(tr){open[tr.dataset.s]=!open[tr.dataset.s];body()}});\ndocument.addEventListener(\"input\",function(e){if(e.target.id===\"q\"){q=e.target.value;body()}});\ndraw();\n</script></body></html>`;\n\nconst html = TEMPLATE\n  .replace('%%DATE%%', esc(new Date().toISOString().slice(0, 16).replace('T', ' ')))\n  .replace('%%KPIS%%', () => kpis)\n  .replace('%%SUMMARY%%', () => esc(engine.fallback_summary))\n  .replace('%%MIX%%', () => mix)\n  .replace('%%DEPS%%', () => depHtml)\n  .replace('%%POLICY%%', () => policyHtml || '<p>Policy review not available for this run.</p>')\n  .replace('%%DQ%%', () => dqHtml)\n  .replace('%%GRAPH%%', () => graphHtml)\n  .replace('%%LLM%%', esc(llmStatus))\n  .replace('%%DATA%%', () => JSON.stringify(data).replace(/</g, '\\\\u003c'));\n\nreturn [{ json: { html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        48
+      ],
+      "id": "ebb1e976-d889-482c-9696-cdffeba0b712",
+      "name": "Report_HTML"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Graph_Sync_JS - writes the run into Neo4j and reads back insights\n// n8n Code node | Mode: \"Run Once for All Items\"\n// Place it between \"Policy_Collect_JS\" and \"Basic LLM Chain\".\n// It passes its input through unchanged and adds a \"graph\" field, so the\n// pipeline keeps working even when Neo4j is down (graph.available = false).\n// Needs: Neo4j 5.x with the Query API on port 7474 (see docker-compose).\n// ============================================================\n\n//const NEO4J = {\n//  url: 'http://host.docker.internal:7474/db/neo4j/query/v2', // n8n and Neo4j run as separate \"docker run\" containers on a Mac\n//  user: 'neo4j',\n// password: '!SampleAiProject',\n//};\n\nconst NEO4J = {\n  url: 'http://neo4j:7474/db/neo4j/query/v2', // Uses the Docker container name\n  user: 'neo4j',\n  password: '!SampleAiProject',\n};\n\nconst engine = $('Pricing_Engine_JS').first().json;\nconst validated = $('Validate & Normalise').all().map((i) => i.json).filter((v) => v.validation_status === 'valid');\nconst meta = {};\nvalidated.forEach((v) => { meta[v.sku] = v; });\nconst RUN_ID = new Date().toISOString().slice(0, 19);\n\n// ---------- policy clauses (from the policy document) ----------\nconst CLAUSES = [\n  ['P-2.1', 'Minimum markup over cost', '2 Margin protection'], ['P-2.2', 'Items priced below the minimum', '2 Margin protection'],\n  ['P-3.1', 'Maximum markdown per run', '3 Price changes'], ['P-4.1', 'Approval threshold', '4 Approvals'],\n  ['P-4.2', 'Clearance in Furniture and Electronics', '4 Approvals'], ['P-4.3', 'REVIEW items', '4 Approvals'],\n  ['P-4.4', 'Large stock exposure', '4 Approvals'], ['P-5.1', 'Cooldown', '5 Timing'],\n  ['P-6.1', 'Fast movers', '6 Demand and stock'], ['P-6.2', 'Stock pressure', '6 Demand and stock'],\n  ['P-7.1', 'Undercutting', '7 Competition'], ['P-8.1', 'Clearance criteria', '8 Clearance'],\n].map((c) => ({ id: c[0], title: c[1], section: c[2] }));\n\n// Deterministic decision -> clause mapping (no LLM). Better long term: let the engine emit clause IDs.\nfunction clausesFor(r) {\n  const ids = new Set();\n  const why = (r.reasons || []).join(' | ');\n  if (r.approval_required) ids.add('P-4.1');\n  if (r.action === 'CLEARANCE') { ids.add('P-8.1'); if (['Furniture', 'Electronics'].includes(r.department)) ids.add('P-4.2'); }\n  if (r.action === 'REVIEW') { ids.add('P-2.2'); ids.add('P-4.3'); }\n  if (/Fast mover/i.test(why)) ids.add('P-6.1');\n  if (/cooldown/i.test(why)) ids.add('P-5.1');\n  if (/Capped at/i.test(why)) ids.add('P-3.1');\n  if (/margin floor/i.test(why)) ids.add('P-2.1');\n  if (/competitor/i.test(why)) ids.add('P-7.1');\n  if (/Stock pressure/i.test(why)) ids.add('P-6.2');\n  if (r.markdown_percent > 0 && r.cost_price_sek * r.units_in_stock > 150000) ids.add('P-4.4');\n  return [...ids];\n}\n\nconst rows = engine.results.map((r) => {\n  const m = meta[r.sku] || {};\n  return {\n    sku: r.sku, gtin: r.gtin || m.gtin || null,\n    product_name: r.product_name, product_id: (m.brand || 'NoBrand') + '|' + r.product_name,\n    variant: m.variant || 'Standard', variant_id: (m.brand || 'NoBrand') + '|' + r.product_name + '|' + (m.variant || 'Standard'),\n    store: m.store || 'Unknown', brand: m.brand || 'Unknown', supplier: m.supplier || 'Unknown',\n    department: r.department, category: r.category, subcategory: m.subcategory || 'General',\n    current_price: r.current_price_sek, recommended_price: r.recommended_price_sek, markdown_percent: r.markdown_percent,\n    cost_price: r.cost_price_sek, units_in_stock: r.units_in_stock, days_in_stock: r.days_in_stock, weeks_of_cover: r.weeks_of_cover,\n    action: r.action, approval_required: !!r.approval_required, reasons: (r.reasons || []).join(' | '),\n    revenue_given_up: Math.round((r.current_price_sek - r.recommended_price_sek) * r.units_in_stock),\n    clauses: clausesFor(r),\n  };\n});\n\n// ---------- Cypher ----------\nconst CONSTRAINTS = [\n  'CREATE CONSTRAINT sku_key IF NOT EXISTS FOR (n:SKU) REQUIRE n.sku IS UNIQUE',\n  'CREATE CONSTRAINT variant_key IF NOT EXISTS FOR (n:Variant) REQUIRE n.id IS UNIQUE',\n  'CREATE CONSTRAINT product_key IF NOT EXISTS FOR (n:Product) REQUIRE n.id IS UNIQUE',\n  'CREATE CONSTRAINT decision_key IF NOT EXISTS FOR (n:Decision) REQUIRE n.id IS UNIQUE',\n  'CREATE CONSTRAINT clause_key IF NOT EXISTS FOR (n:Clause) REQUIRE n.id IS UNIQUE',\n];\nconst LOAD_CLAUSES = 'UNWIND $clauses AS c MERGE (n:Clause {id: c.id}) SET n.title = c.title, n.section = c.section';\nconst LOAD = `\nUNWIND $rows AS r\nMERGE (dep:Department {name: r.department})\nMERGE (cat:Category {id: r.department + '/' + r.category}) SET cat.name = r.category\nMERGE (dep)-[:HAS_CATEGORY]->(cat)\nMERGE (sub:Subcategory {id: r.department + '/' + r.category + '/' + r.subcategory}) SET sub.name = r.subcategory\nMERGE (cat)-[:HAS_SUBCATEGORY]->(sub)\nMERGE (b:Brand {name: r.brand})\nMERGE (sup:Supplier {name: r.supplier})\nMERGE (p:Product {id: r.product_id}) SET p.name = r.product_name\nMERGE (sub)-[:HAS_PRODUCT]->(p)\nMERGE (p)-[:BY_BRAND]->(b)\nMERGE (p)-[:SUPPLIED_BY]->(sup)\nMERGE (v:Variant {id: r.variant_id}) SET v.name = r.variant, v.gtin = coalesce(r.gtin, v.gtin)\nMERGE (p)-[:HAS_VARIANT]->(v)\nMERGE (st:Store {name: r.store})\nMERGE (s:SKU {sku: r.sku})\nSET s.current_price = r.current_price, s.cost_price = r.cost_price, s.units_in_stock = r.units_in_stock,\n    s.days_in_stock = r.days_in_stock, s.weeks_of_cover = r.weeks_of_cover, s.gtin_missing = (r.gtin IS NULL)\nMERGE (v)-[:STOCKED_AS]->(s)\nMERGE (s)-[:AT_STORE]->(st)\nMERGE (d:Decision {id: r.sku + '@' + $run_id})\nSET d.run_id = $run_id, d.action = r.action, d.recommended_price = r.recommended_price, d.markdown_percent = r.markdown_percent,\n    d.approval_required = r.approval_required, d.reasons = r.reasons, d.revenue_given_up = r.revenue_given_up\nMERGE (s)-[:HAS_DECISION]->(d)\nWITH d, r\nUNWIND r.clauses AS cid\nMATCH (c:Clause {id: cid})\nMERGE (d)-[:BECAUSE_OF]->(c)`;\n\nconst INSIGHTS = {\n  rebalance: `MATCH (p:Product)-[:HAS_VARIANT]->(v:Variant)-[:STOCKED_AS]->(a:SKU)-[:HAS_DECISION]->(da:Decision {run_id: $run_id}),\n  (v)-[:STOCKED_AS]->(b:SKU)-[:HAS_DECISION]->(db:Decision {run_id: $run_id}),\n  (a)-[:AT_STORE]->(sa:Store), (b)-[:AT_STORE]->(sb:Store)\nWHERE da.action IN ['MARKDOWN','CLEARANCE'] AND da.markdown_percent >= 15 AND a.weeks_of_cover >= 20\n  AND db.action = 'HOLD' AND b.weeks_of_cover < 4 AND b.units_in_stock > 0\nRETURN p.name AS product, v.name AS variant, sa.name AS surplus_store, a.weeks_of_cover AS surplus_cover,\n  da.markdown_percent AS markdown, da.revenue_given_up AS revenue_given_up, sb.name AS short_store, b.weeks_of_cover AS short_cover\nORDER BY revenue_given_up DESC LIMIT 8`,\n  price_gap: `MATCH (p:Product)-[:HAS_VARIANT]->(v:Variant)-[:STOCKED_AS]->(s:SKU)-[:AT_STORE]->(st:Store)\nWITH p, v, min(s.current_price) AS lo, max(s.current_price) AS hi, collect(st.name + ': ' + toString(s.current_price)) AS offers\nWHERE hi > lo\nRETURN p.name AS product, v.name AS variant, lo, hi, round(100.0 * (hi - lo) / lo, 1) AS gap_pct, offers\nORDER BY gap_pct DESC LIMIT 8`,\n  clauses: `MATCH (d:Decision {run_id: $run_id})-[:BECAUSE_OF]->(c:Clause)\nRETURN c.id AS clause, c.title AS title, count(d) AS decisions, sum(d.revenue_given_up) AS revenue_given_up\nORDER BY decisions DESC`,\n  stores: `MATCH (st:Store)<-[:AT_STORE]-(s:SKU)-[:HAS_DECISION]->(d:Decision {run_id: $run_id})\nRETURN st.name AS store, count(s) AS skus, sum(d.revenue_given_up) AS revenue_given_up, round(avg(d.markdown_percent), 1) AS avg_markdown\nORDER BY revenue_given_up DESC`,\n  labels: 'MATCH (n) RETURN labels(n)[0] AS label, count(n) AS n ORDER BY n DESC',\n  rels: 'MATCH ()-[r]->() RETURN count(r) AS n',\n};\n\n// ---------- Neo4j helper (handles plain and typed JSON replies) ----------\nconst plain = (v) => {\n  if (Array.isArray(v)) return v.map(plain);\n  if (v && typeof v === 'object') {\n    if ('$type' in v && '_value' in v) return v.$type === 'Integer' ? Number(v._value) : plain(v._value);\n    const o = {}; Object.keys(v).forEach((k) => { o[k] = plain(v[k]); }); return o;\n  }\n  return v;\n};\nconst auth = 'Basic ' + Buffer.from(NEO4J.user + ':' + NEO4J.password).toString('base64');\nconst q = async (statement, parameters) => {\n  const res = await this.helpers.httpRequest({\n    method: 'POST', url: NEO4J.url, json: true, timeout: 20000,\n    headers: { Authorization: auth, Accept: 'application/json', 'Content-Type': 'application/json' },\n    body: { statement, parameters: parameters || {} },\n  });\n  const d = res.data || {};\n  const fields = d.fields || [];\n  return (d.values || []).map((row) => { const o = {}; fields.forEach((f, i) => { o[f] = plain(row[i]); }); return o; });\n};\n\nconst input = $input.first().json;\nlet graph;\ntry {\n  for (const c of CONSTRAINTS) await q(c);\n  await q(LOAD_CLAUSES, { clauses: CLAUSES });\n  await q(LOAD, { rows, run_id: RUN_ID });\n  const p = { run_id: RUN_ID };\n  const out = {};\n  for (const k of Object.keys(INSIGHTS)) out[k] = await q(INSIGHTS[k], k === 'labels' || k === 'rels' ? {} : p);\n  const lineage = {}; rows.forEach((r) => { lineage[r.sku] = r.clauses; });\n  graph = {\n    available: true, run_id: RUN_ID, lineage,\n    nodes: out.labels, node_total: out.labels.reduce((a, x) => a + x.n, 0), relationships: out.rels[0] ? out.rels[0].n : 0,\n    rebalance: out.rebalance, price_gap: out.price_gap, clauses: out.clauses, stores: out.stores,\n  };\n} catch (e) {\n  graph = { available: false, error: String(e.message || e).slice(0, 300) };\n}\nreturn [{ json: { ...input, graph } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3248,
+        -208
+      ],
+      "id": "2c73ef3d-5c25-425a-a575-5b51efc5822d",
+      "name": "Graph_Sync_JS"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "1a983b3f-96f7-41f3-ab83-bfabe20b0a49",
+      "name": "Extract_Policy_Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1792,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Policy_Source_JS - where the policy lives in git\n// n8n Code node | Mode: \"Run Once for All Items\"\n// Only this node knows the repository. Change the values below if you move the policy files.\n// The policy is read at an exact commit (the latest one that touched the folder), so every report can say\n// which policy version produced it.\n// ============================================================\nconst SOURCE = {\n  owner: 'thivakar-allimuthu',\n  repo: 'enterprise-ai-readiness-framework',\n  branch: 'main',                                       // check: the branch that holds the policy files\n  path: 'case-studies/autonomous-pricing-markdown/policies',\n};\n\nconst api = 'https://api.github.com/repos/' + SOURCE.owner + '/' + SOURCE.repo;\nreturn [{\n  json: {\n    source: SOURCE,\n    // latest commit that changed anything in the policy folder\n    commits_url: api + '/commits?sha=' + encodeURIComponent(SOURCE.branch) + '&path=' + encodeURIComponent(SOURCE.path) + '&per_page=1',\n    raw_base: 'https://raw.githubusercontent.com/' + SOURCE.owner + '/' + SOURCE.repo,\n    path: SOURCE.path,\n  },\n}];\n"
+      },
+      "id": "ac96f290-36f2-42b5-a7ff-e446ab984f61",
+      "name": "Policy_Source_JS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.commits_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-pricing-agent"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "216a85fa-ea3f-4d70-9ac2-e634e3cb6452",
+      "name": "Policy_Commit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Policy_Source_JS').first().json.raw_base }}/{{ $json.sha }}/{{ $('Policy_Source_JS').first().json.path }}/policy-manifest.json",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "ecd5ae76-7643-4500-8b9c-a8f0e4e8f8ee",
+      "name": "Policy_Manifest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Policy_Docs_JS - turns the manifest into one item per policy document to download\n// n8n Code node | Mode: \"Run Once for All Items\"\n// Input : the manifest (policy-manifest.json) from \"Policy_Manifest\"\n// Output: one item per document: { file, title, url, sha }\n// ============================================================\nconst manifest = $input.first().json;\nconst src = $('Policy_Source_JS').first().json;\nconst sha = $('Policy_Commit').first().json.sha;\nif (!sha) throw new Error(\"Policy_Commit returned no commit. Check the repository, branch and folder in 'Policy_Source_JS'.\");\nif (!Array.isArray(manifest.documents) || !manifest.documents.length) {\n  throw new Error(\"policy-manifest.json has no 'documents' list.\");\n}\nreturn manifest.documents.map((d) => {\n  if (!d.file || !/\\.pdf$/i.test(d.file)) throw new Error('Manifest document without a .pdf file name: ' + JSON.stringify(d));\n  return { json: { file: d.file, title: d.title || d.file, sha, url: src.raw_base + '/' + sha + '/' + src.path + '/' + d.file } };\n});\n"
+      },
+      "id": "de79de07-201b-4321-a1e2-ee9a057e0e93",
+      "name": "Policy_Docs_JS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "d60939cd-b86a-49bc-a9e6-4e59e8b7f053",
+      "name": "Fetch_Policy_PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1568,
+        -208
+      ]
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "sku": "SKU-1001",
+          "gtin": "7351000000006",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "variant": "Black",
+          "store": "Online",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 1200,
+          "current_price_sek": 2499,
+          "competitor_prices_sek": [
+            2399
+          ],
+          "days_in_stock": 98,
+          "units_in_stock": 49,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1038",
+          "gtin": "7351000000006",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "variant": "Black",
+          "store": "Göteborg",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 1200,
+          "current_price_sek": 2499,
+          "competitor_prices_sek": [
+            2419
+          ],
+          "days_in_stock": 14,
+          "units_in_stock": 29,
+          "sales_velocity_30d": 28,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1075",
+          "gtin": "7351000130017",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "variant": "White",
+          "store": "Malmö",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 1224,
+          "current_price_sek": 2549,
+          "competitor_prices_sek": [
+            2419,
+            2549,
+            2629
+          ],
+          "days_in_stock": 254,
+          "units_in_stock": 187,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1112",
+          "gtin": "7351000130017",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "variant": "White",
+          "store": "Online",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 1224,
+          "current_price_sek": 2549,
+          "competitor_prices_sek": [
+            2409,
+            2549,
+            2619
+          ],
+          "days_in_stock": 34,
+          "units_in_stock": 90,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1149",
+          "gtin": "7351000130017",
+          "product_name": "Pro Noise-Canceling Headphones",
+          "variant": "White",
+          "store": "Stockholm",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Headphones",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 1224,
+          "current_price_sek": 2549,
+          "competitor_prices_sek": [
+            2409,
+            2549,
+            2619
+          ],
+          "days_in_stock": 147,
+          "units_in_stock": 115,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 3
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1186",
+          "gtin": "7351000260028",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Black",
+          "store": "Malmö",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 260,
+          "current_price_sek": 269,
+          "competitor_prices_sek": [
+            569,
+            579,
+            599
+          ],
+          "days_in_stock": 67,
+          "units_in_stock": 77,
+          "sales_velocity_30d": 7,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1223",
+          "gtin": "7351000260028",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Black",
+          "store": "Uppsala",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 260,
+          "current_price_sek": 599,
+          "competitor_prices_sek": [
+            569,
+            569,
+            609
+          ],
+          "days_in_stock": 130,
+          "units_in_stock": 108,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 3
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1260",
+          "gtin": "7351000260028",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Black",
+          "store": "Online",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 260,
+          "current_price_sek": 599,
+          "competitor_prices_sek": [
+            569,
+            569,
+            609
+          ],
+          "days_in_stock": 196,
+          "units_in_stock": 141,
+          "sales_velocity_30d": 2,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1297",
+          "gtin": "7351000390039",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Blue",
+          "store": "Uppsala",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 265,
+          "current_price_sek": 609,
+          "competitor_prices_sek": [
+            529,
+            549,
+            569
+          ],
+          "days_in_stock": 87,
+          "units_in_stock": 44,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 40
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1334",
+          "gtin": "7351000390039",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Blue",
+          "store": "Malmö",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 265,
+          "current_price_sek": 609,
+          "competitor_prices_sek": [
+            539,
+            549,
+            569
+          ],
+          "days_in_stock": 24,
+          "units_in_stock": 10,
+          "sales_velocity_30d": 39,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1371",
+          "gtin": "7351000390039",
+          "product_name": "Bluetooth Speaker Mini",
+          "variant": "Blue",
+          "store": "Online",
+          "brand": "Nordtone",
+          "department": "Electronics",
+          "category": "Audio",
+          "subcategory": "Speakers",
+          "supplier": "Sonic Supply AB",
+          "cost_price_sek": 265,
+          "current_price_sek": 609,
+          "competitor_prices_sek": [],
+          "days_in_stock": 78,
+          "units_in_stock": 72,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1408",
+          "gtin": "7351000520047",
+          "product_name": "10-inch Tablet 64GB",
+          "variant": "Silver",
+          "store": "Online",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 2300,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3489,
+            3539,
+            3569
+          ],
+          "days_in_stock": 38,
+          "units_in_stock": 76,
+          "sales_velocity_30d": 11,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1445",
+          "gtin": "7351000520047",
+          "product_name": "10-inch Tablet 64GB",
+          "variant": "Silver",
+          "store": "Uppsala",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 2300,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3479,
+            3539,
+            3569
+          ],
+          "days_in_stock": 17,
+          "units_in_stock": 29,
+          "sales_velocity_30d": 46,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1482",
+          "gtin": "7351000520047",
+          "product_name": "10-inch Tablet 64GB",
+          "variant": "Silver",
+          "store": "Göteborg",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 2300,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3499,
+            3549,
+            3569
+          ],
+          "days_in_stock": 33,
+          "units_in_stock": 12,
+          "sales_velocity_30d": 26,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1519",
+          "gtin": "7351000650058",
+          "product_name": "10-inch Tablet 64GB",
+          "variant": "Space Grey",
+          "store": "Uppsala",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 2346,
+          "current_price_sek": 3559,
+          "competitor_prices_sek": [
+            3129,
+            3359,
+            3459
+          ],
+          "days_in_stock": 29,
+          "units_in_stock": 14,
+          "sales_velocity_30d": 30,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1556",
+          "gtin": "7351000650058",
+          "product_name": "10-inch Tablet 64GB",
+          "variant": "Space Grey",
+          "store": "Online",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Tablets",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 2346,
+          "current_price_sek": 3559,
+          "competitor_prices_sek": [
+            3129,
+            3349,
+            3449
+          ],
+          "days_in_stock": 212,
+          "units_in_stock": 92,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1593",
+          "gtin": "7351000780069",
+          "product_name": "Wireless Mouse",
+          "variant": "Black",
+          "store": "Malmö",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Accessories",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 90,
+          "current_price_sek": 269,
+          "competitor_prices_sek": [
+            249
+          ],
+          "days_in_stock": 53,
+          "units_in_stock": 89,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1630",
+          "gtin": "7351000780069",
+          "product_name": "Wireless Mouse",
+          "variant": "Black",
+          "store": "Online",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Accessories",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 90,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            249
+          ],
+          "days_in_stock": 60,
+          "units_in_stock": 17,
+          "sales_velocity_30d": 37,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1667",
+          "gtin": "7351000780069",
+          "product_name": "Wireless Mouse",
+          "variant": "Black",
+          "store": "Stockholm",
+          "brand": "Lumina",
+          "department": "Electronics",
+          "category": "Computing",
+          "subcategory": "Accessories",
+          "supplier": "Baltic Devices AB",
+          "cost_price_sek": 90,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            249
+          ],
+          "days_in_stock": 88,
+          "units_in_stock": 28,
+          "sales_velocity_30d": 9,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1704",
+          "gtin": "7351000910077",
+          "product_name": "USB-C Charger 65W",
+          "variant": "White",
+          "store": "Uppsala",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Mobile",
+          "subcategory": "Chargers",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            269,
+            289,
+            309
+          ],
+          "days_in_stock": 242,
+          "units_in_stock": 98,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1741",
+          "gtin": "7351000910077",
+          "product_name": "USB-C Charger 65W",
+          "variant": "White",
+          "store": "Malmö",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Mobile",
+          "subcategory": "Chargers",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            259,
+            279,
+            319
+          ],
+          "days_in_stock": 40,
+          "units_in_stock": 25,
+          "sales_velocity_30d": 25,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1778",
+          "gtin": "7351000910077",
+          "product_name": "USB-C Charger 65W",
+          "variant": "White",
+          "store": "Göteborg",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Mobile",
+          "subcategory": "Chargers",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            269,
+            279,
+            319
+          ],
+          "days_in_stock": 232,
+          "units_in_stock": 85,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1815",
+          "gtin": "7351001040087",
+          "product_name": "Smart LED Bulb 4-pack",
+          "variant": "Warm",
+          "store": "Göteborg",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Smart Home",
+          "subcategory": "Lighting",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 150,
+          "current_price_sek": 349,
+          "competitor_prices_sek": [
+            339,
+            349,
+            359
+          ],
+          "days_in_stock": 100,
+          "units_in_stock": 84,
+          "sales_velocity_30d": 18,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1852",
+          "gtin": "7351001040087",
+          "product_name": "Smart LED Bulb 4-pack",
+          "variant": "Warm",
+          "store": "Online",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Smart Home",
+          "subcategory": "Lighting",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 150,
+          "current_price_sek": 349,
+          "competitor_prices_sek": [
+            329,
+            359,
+            359
+          ],
+          "days_in_stock": 18,
+          "units_in_stock": 10,
+          "sales_velocity_30d": 26,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1889",
+          "gtin": "7351001170098",
+          "product_name": "Smart LED Bulb 4-pack",
+          "variant": "Cool",
+          "store": "Online",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Smart Home",
+          "subcategory": "Lighting",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 153,
+          "current_price_sek": 359,
+          "competitor_prices_sek": [
+            309,
+            329
+          ],
+          "days_in_stock": 94,
+          "units_in_stock": 41,
+          "sales_velocity_30d": 10,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1926",
+          "gtin": "7351001170098",
+          "product_name": "Smart LED Bulb 4-pack",
+          "variant": "Cool",
+          "store": "Göteborg",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Smart Home",
+          "subcategory": "Lighting",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 153,
+          "current_price_sek": 359,
+          "competitor_prices_sek": [
+            309,
+            309
+          ],
+          "days_in_stock": 98,
+          "units_in_stock": 62,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 40
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-1963",
+          "gtin": "7351001170098",
+          "product_name": "Smart LED Bulb 4-pack",
+          "variant": "Cool",
+          "store": "Malmö",
+          "brand": "Voltix",
+          "department": "Electronics",
+          "category": "Smart Home",
+          "subcategory": "Lighting",
+          "supplier": "Nordic Power AB",
+          "cost_price_sek": 153,
+          "current_price_sek": 359,
+          "competitor_prices_sek": [
+            309,
+            329
+          ],
+          "days_in_stock": 223,
+          "units_in_stock": 78,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2000",
+          "gtin": "7351001300105",
+          "product_name": "Ergonomic Mesh Office Chair",
+          "variant": "Black",
+          "store": "Malmö",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Chairs",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 2600,
+          "current_price_sek": 2699,
+          "competitor_prices_sek": [
+            4319
+          ],
+          "days_in_stock": 73,
+          "units_in_stock": 51,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2037",
+          "gtin": "7351001300105",
+          "product_name": "Ergonomic Mesh Office Chair",
+          "variant": "Black",
+          "store": "Uppsala",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Chairs",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 2600,
+          "current_price_sek": 4499,
+          "competitor_prices_sek": [
+            4309
+          ],
+          "days_in_stock": 37,
+          "units_in_stock": 82,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2074",
+          "gtin": "7351001430116",
+          "product_name": "Ergonomic Mesh Office Chair",
+          "variant": "Grey",
+          "store": "Online",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Chairs",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 2652,
+          "current_price_sek": 4589,
+          "competitor_prices_sek": [
+            4309
+          ],
+          "days_in_stock": 93,
+          "units_in_stock": 64,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2111",
+          "gtin": "7351001430116",
+          "product_name": "Ergonomic Mesh Office Chair",
+          "variant": "Grey",
+          "store": "Göteborg",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Chairs",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 2652,
+          "current_price_sek": 4589,
+          "competitor_prices_sek": [
+            4309
+          ],
+          "days_in_stock": 81,
+          "units_in_stock": 42,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2148",
+          "gtin": "7351001560127",
+          "product_name": "Height-Adjustable Desk",
+          "variant": "Oak",
+          "store": "Göteborg",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 3100,
+          "current_price_sek": 5989,
+          "competitor_prices_sek": [
+            5229,
+            5279,
+            5629
+          ],
+          "days_in_stock": 63,
+          "units_in_stock": 40,
+          "sales_velocity_30d": 16,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2185",
+          "gtin": "7351001560127",
+          "product_name": "Height-Adjustable Desk",
+          "variant": "Oak",
+          "store": "Uppsala",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 3100,
+          "current_price_sek": 5989,
+          "competitor_prices_sek": [
+            5239,
+            5279,
+            5629
+          ],
+          "days_in_stock": 369,
+          "units_in_stock": 64,
+          "sales_velocity_30d": 2,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2222",
+          "gtin": "7351001690138",
+          "product_name": "Height-Adjustable Desk",
+          "variant": "White",
+          "store": "Uppsala",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 3162,
+          "current_price_sek": 6109,
+          "competitor_prices_sek": [
+            6029,
+            6359
+          ],
+          "days_in_stock": 65,
+          "units_in_stock": 71,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2259",
+          "gtin": "7351001690138",
+          "product_name": "Height-Adjustable Desk",
+          "variant": "White",
+          "store": "Malmö",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 3162,
+          "current_price_sek": 6109,
+          "competitor_prices_sek": [
+            6019,
+            6339
+          ],
+          "days_in_stock": 11,
+          "units_in_stock": 20,
+          "sales_velocity_30d": 49,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2296",
+          "gtin": "7351001690138",
+          "product_name": "Height-Adjustable Desk",
+          "variant": "White",
+          "store": "Göteborg",
+          "brand": "Ergolund",
+          "department": "Furniture",
+          "category": "Office",
+          "subcategory": "Desks",
+          "supplier": "Skandi Möbler AB",
+          "cost_price_sek": 3162,
+          "current_price_sek": 6109,
+          "competitor_prices_sek": [
+            6029,
+            6339
+          ],
+          "days_in_stock": 98,
+          "units_in_stock": 40,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 6
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2333",
+          "gtin": "7351001820146",
+          "product_name": "3-Seat Fabric Sofa",
+          "variant": "Grey",
+          "store": "Uppsala",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Sofas",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 4800,
+          "current_price_sek": 8989,
+          "competitor_prices_sek": [
+            7939,
+            8159
+          ],
+          "days_in_stock": 74,
+          "units_in_stock": 62,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2370",
+          "gtin": "7351001820146",
+          "product_name": "3-Seat Fabric Sofa",
+          "variant": "Grey",
+          "store": "Malmö",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Sofas",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 4800,
+          "current_price_sek": 8989,
+          "competitor_prices_sek": [
+            7929,
+            8169
+          ],
+          "days_in_stock": 27,
+          "units_in_stock": 15,
+          "sales_velocity_30d": 28,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2407",
+          "gtin": "7351001950157",
+          "product_name": "3-Seat Fabric Sofa",
+          "variant": "Beige",
+          "store": "Malmö",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Sofas",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 4896,
+          "current_price_sek": 9169,
+          "competitor_prices_sek": [
+            8939
+          ],
+          "days_in_stock": 24,
+          "units_in_stock": 18,
+          "sales_velocity_30d": 29,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2444",
+          "gtin": "7351001950157",
+          "product_name": "3-Seat Fabric Sofa",
+          "variant": "Beige",
+          "store": "Stockholm",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Sofas",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 4896,
+          "current_price_sek": 9169,
+          "competitor_prices_sek": [
+            8929
+          ],
+          "days_in_stock": 95,
+          "units_in_stock": 59,
+          "sales_velocity_30d": 10,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2481",
+          "gtin": "7351002080167",
+          "product_name": "Oak Bookcase 5-Shelf",
+          "variant": "Oak",
+          "store": "Göteborg",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Storage",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 900,
+          "current_price_sek": 1789,
+          "competitor_prices_sek": [
+            1709
+          ],
+          "days_in_stock": 107,
+          "units_in_stock": 53,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 5
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2518",
+          "gtin": "7351002080167",
+          "product_name": "Oak Bookcase 5-Shelf",
+          "variant": "Oak",
+          "store": "Stockholm",
+          "brand": "Hemvik",
+          "department": "Furniture",
+          "category": "Living Room",
+          "subcategory": "Storage",
+          "supplier": "Nordic Living AB",
+          "cost_price_sek": 900,
+          "current_price_sek": 1789,
+          "competitor_prices_sek": [
+            1709
+          ],
+          "days_in_stock": 98,
+          "units_in_stock": 48,
+          "sales_velocity_30d": 9,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2555",
+          "gtin": "7351002210175",
+          "product_name": "Memory Foam Mattress 160cm",
+          "variant": "Firm",
+          "store": "Stockholm",
+          "brand": "Sömn",
+          "department": "Furniture",
+          "category": "Bedroom",
+          "subcategory": "Mattresses",
+          "supplier": "Dreamtech AB",
+          "cost_price_sek": 2200,
+          "current_price_sek": 4289,
+          "competitor_prices_sek": [
+            3709,
+            3869,
+            3969
+          ],
+          "days_in_stock": 22,
+          "units_in_stock": 25,
+          "sales_velocity_30d": 57,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2592",
+          "gtin": "7351002210175",
+          "product_name": "Memory Foam Mattress 160cm",
+          "variant": "Firm",
+          "store": "Online",
+          "brand": "Sömn",
+          "department": "Furniture",
+          "category": "Bedroom",
+          "subcategory": "Mattresses",
+          "supplier": "Dreamtech AB",
+          "cost_price_sek": 2200,
+          "current_price_sek": 4289,
+          "competitor_prices_sek": [
+            3699,
+            3879,
+            3959
+          ],
+          "days_in_stock": 99,
+          "units_in_stock": 62,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2629",
+          "gtin": "7351002210175",
+          "product_name": "Memory Foam Mattress 160cm",
+          "variant": "Firm",
+          "store": "Malmö",
+          "brand": "Sömn",
+          "department": "Furniture",
+          "category": "Bedroom",
+          "subcategory": "Mattresses",
+          "supplier": "Dreamtech AB",
+          "cost_price_sek": 2200,
+          "current_price_sek": 4289,
+          "competitor_prices_sek": [
+            3699,
+            3869,
+            3949
+          ],
+          "days_in_stock": 42,
+          "units_in_stock": 69,
+          "sales_velocity_30d": 10,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2666",
+          "gtin": "7351002340186",
+          "product_name": "Memory Foam Mattress 160cm",
+          "variant": "Soft",
+          "store": "Uppsala",
+          "brand": "Sömn",
+          "department": "Furniture",
+          "category": "Bedroom",
+          "subcategory": "Mattresses",
+          "supplier": "Dreamtech AB",
+          "cost_price_sek": 2244,
+          "current_price_sek": 4769,
+          "competitor_prices_sek": [
+            3809,
+            4109,
+            4289
+          ],
+          "days_in_stock": 54,
+          "units_in_stock": 11,
+          "sales_velocity_30d": 43,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2703",
+          "gtin": "7351002340186",
+          "product_name": "Memory Foam Mattress 160cm",
+          "variant": "Soft",
+          "store": "Malmö",
+          "brand": "Sömn",
+          "department": "Furniture",
+          "category": "Bedroom",
+          "subcategory": "Mattresses",
+          "supplier": "Dreamtech AB",
+          "cost_price_sek": 2244,
+          "current_price_sek": 4379,
+          "competitor_prices_sek": [
+            3809,
+            4099,
+            4289
+          ],
+          "days_in_stock": 26,
+          "units_in_stock": 20,
+          "sales_velocity_30d": 48,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2740",
+          "gtin": "7351002470197",
+          "product_name": "3-Person Dome Tent",
+          "variant": "Green",
+          "store": "Uppsala",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 1300,
+          "current_price_sek": 2289,
+          "competitor_prices_sek": [
+            1959,
+            2119
+          ],
+          "days_in_stock": 42,
+          "units_in_stock": 17,
+          "sales_velocity_30d": 37,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2777",
+          "gtin": "7351002470197",
+          "product_name": "3-Person Dome Tent",
+          "variant": "Green",
+          "store": "Stockholm",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 1300,
+          "current_price_sek": 2289,
+          "competitor_prices_sek": [
+            1979,
+            2109
+          ],
+          "days_in_stock": 203,
+          "units_in_stock": 190,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2814",
+          "gtin": "7351002600204",
+          "product_name": "3-Person Dome Tent",
+          "variant": "Orange",
+          "store": "Online",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 1326,
+          "current_price_sek": 2339,
+          "competitor_prices_sek": [
+            2109,
+            2139,
+            2249
+          ],
+          "days_in_stock": 329,
+          "units_in_stock": 166,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2851",
+          "gtin": "7351002600204",
+          "product_name": "3-Person Dome Tent",
+          "variant": "Orange",
+          "store": "Göteborg",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 1326,
+          "current_price_sek": 2339,
+          "competitor_prices_sek": [
+            2099,
+            2139,
+            2249
+          ],
+          "days_in_stock": 392,
+          "units_in_stock": 169,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2888",
+          "gtin": "7351002600204",
+          "product_name": "3-Person Dome Tent",
+          "variant": "Orange",
+          "store": "Malmö",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Tents",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 1326,
+          "current_price_sek": 2339,
+          "competitor_prices_sek": [
+            2119,
+            2149,
+            2249
+          ],
+          "days_in_stock": 42,
+          "units_in_stock": 71,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2925",
+          "gtin": "7351002730215",
+          "product_name": "Down Sleeping Bag -10C",
+          "variant": "Regular",
+          "store": "Göteborg",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Sleeping Bags",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 800,
+          "current_price_sek": 829,
+          "competitor_prices_sek": [
+            1539
+          ],
+          "days_in_stock": 118,
+          "units_in_stock": 84,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2962",
+          "gtin": "7351002730215",
+          "product_name": "Down Sleeping Bag -10C",
+          "variant": "Regular",
+          "store": "Uppsala",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Sleeping Bags",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 800,
+          "current_price_sek": 1589,
+          "competitor_prices_sek": [
+            1549
+          ],
+          "days_in_stock": 69,
+          "units_in_stock": 46,
+          "sales_velocity_30d": 13,
+          "days_since_last_price_change": 25
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-2999",
+          "gtin": "7351002860226",
+          "product_name": "Down Sleeping Bag -10C",
+          "variant": "Long",
+          "store": "Uppsala",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Sleeping Bags",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 816,
+          "current_price_sek": 1619,
+          "competitor_prices_sek": [
+            1449,
+            1589
+          ],
+          "days_in_stock": 169,
+          "units_in_stock": 113,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3036",
+          "gtin": "7351002860226",
+          "product_name": "Down Sleeping Bag -10C",
+          "variant": "Long",
+          "store": "Online",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Sleeping Bags",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 816,
+          "current_price_sek": 1619,
+          "competitor_prices_sek": [
+            1449,
+            1589
+          ],
+          "days_in_stock": 31,
+          "units_in_stock": 30,
+          "sales_velocity_30d": 41,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3073",
+          "gtin": "7351002990237",
+          "product_name": "Cast Iron Camping Stove",
+          "variant": "Standard",
+          "store": "Göteborg",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Cooking",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 350,
+          "current_price_sek": 859,
+          "competitor_prices_sek": [
+            679,
+            719,
+            769
+          ],
+          "days_in_stock": 83,
+          "units_in_stock": 59,
+          "sales_velocity_30d": 13,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3110",
+          "gtin": "7351002990237",
+          "product_name": "Cast Iron Camping Stove",
+          "variant": "Standard",
+          "store": "Uppsala",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Cooking",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 350,
+          "current_price_sek": 789,
+          "competitor_prices_sek": [
+            679,
+            729,
+            769
+          ],
+          "days_in_stock": 161,
+          "units_in_stock": 67,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 9
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3147",
+          "gtin": "7351002990237",
+          "product_name": "Cast Iron Camping Stove",
+          "variant": "Standard",
+          "store": "Online",
+          "brand": "Fjällberg",
+          "department": "Outdoor",
+          "category": "Camping",
+          "subcategory": "Cooking",
+          "supplier": "Outdoor Gear Nordic AB",
+          "cost_price_sek": 350,
+          "current_price_sek": 789,
+          "competitor_prices_sek": [
+            689,
+            719,
+            769
+          ],
+          "days_in_stock": 51,
+          "units_in_stock": 36,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3184",
+          "gtin": "7351003120244",
+          "product_name": "Garden Hose 20m",
+          "variant": "Green",
+          "store": "Uppsala",
+          "brand": "Grönt",
+          "department": "Outdoor",
+          "category": "Garden",
+          "subcategory": "Watering",
+          "supplier": "Trädgård Supply AB",
+          "cost_price_sek": 120,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            269,
+            289,
+            309
+          ],
+          "days_in_stock": 25,
+          "units_in_stock": 82,
+          "sales_velocity_30d": 11,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3221",
+          "gtin": "7351003120244",
+          "product_name": "Garden Hose 20m",
+          "variant": "Green",
+          "store": "Online",
+          "brand": "Grönt",
+          "department": "Outdoor",
+          "category": "Garden",
+          "subcategory": "Watering",
+          "supplier": "Trädgård Supply AB",
+          "cost_price_sek": 120,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            269,
+            289,
+            309
+          ],
+          "days_in_stock": 65,
+          "units_in_stock": 67,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3258",
+          "gtin": "7351003250255",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Black",
+          "store": "Göteborg",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 750,
+          "current_price_sek": 1299,
+          "competitor_prices_sek": [],
+          "days_in_stock": 81,
+          "units_in_stock": 34,
+          "sales_velocity_30d": 11,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3295",
+          "gtin": "7351003250255",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Black",
+          "store": "Stockholm",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 750,
+          "current_price_sek": 1299,
+          "competitor_prices_sek": [
+            1339
+          ],
+          "days_in_stock": 47,
+          "units_in_stock": 21,
+          "sales_velocity_30d": 29,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3332",
+          "gtin": "7351003250255",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Black",
+          "store": "Malmö",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 750,
+          "current_price_sek": 1299,
+          "competitor_prices_sek": [
+            1339
+          ],
+          "days_in_stock": 273,
+          "units_in_stock": 53,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3369",
+          "gtin": "7351003380266",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Steel",
+          "store": "Malmö",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 765,
+          "current_price_sek": 1319,
+          "competitor_prices_sek": [
+            1229,
+            1349
+          ],
+          "days_in_stock": 349,
+          "units_in_stock": 142,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3406",
+          "gtin": "7351003380266",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Steel",
+          "store": "Göteborg",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 765,
+          "current_price_sek": 1319,
+          "competitor_prices_sek": [
+            1239,
+            1369
+          ],
+          "days_in_stock": 145,
+          "units_in_stock": 108,
+          "sales_velocity_30d": 10,
+          "days_since_last_price_change": 4
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3443",
+          "gtin": "7351003380266",
+          "product_name": "Digital Air Fryer 5L",
+          "variant": "Steel",
+          "store": "Uppsala",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Appliances",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 765,
+          "current_price_sek": 1319,
+          "competitor_prices_sek": [
+            1249,
+            1359
+          ],
+          "days_in_stock": 95,
+          "units_in_stock": 46,
+          "sales_velocity_30d": 6,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3480",
+          "gtin": "7351003510274",
+          "product_name": "Stainless Steel Pan Set",
+          "variant": "Steel",
+          "store": "Malmö",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Cookware",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 480,
+          "current_price_sek": 989,
+          "competitor_prices_sek": [
+            889,
+            979,
+            1019
+          ],
+          "days_in_stock": 284,
+          "units_in_stock": 182,
+          "sales_velocity_30d": 4,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3517",
+          "gtin": "7351003510274",
+          "product_name": "Stainless Steel Pan Set",
+          "variant": "Steel",
+          "store": "Uppsala",
+          "brand": "Kökslust",
+          "department": "Home",
+          "category": "Kitchen",
+          "subcategory": "Cookware",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 480,
+          "current_price_sek": 989,
+          "competitor_prices_sek": [
+            899,
+            989,
+            1019
+          ],
+          "days_in_stock": 14,
+          "units_in_stock": 26,
+          "sales_velocity_30d": 38,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3554",
+          "gtin": "7351003640285",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "Black",
+          "store": "Göteborg",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1900,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3149,
+            3259,
+            3349
+          ],
+          "days_in_stock": 55,
+          "units_in_stock": 58,
+          "sales_velocity_30d": 9,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3591",
+          "gtin": "7351003640285",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "Black",
+          "store": "Malmö",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1900,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3149,
+            3259,
+            3349
+          ],
+          "days_in_stock": 92,
+          "units_in_stock": 73,
+          "sales_velocity_30d": 7,
+          "days_since_last_price_change": 45
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3628",
+          "gtin": "7351003640285",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "Black",
+          "store": "Uppsala",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1900,
+          "current_price_sek": 3489,
+          "competitor_prices_sek": [
+            3149,
+            3259,
+            3339
+          ],
+          "days_in_stock": 71,
+          "units_in_stock": 89,
+          "sales_velocity_30d": 6,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3665",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "White",
+          "store": "Uppsala",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1938,
+          "current_price_sek": 3559,
+          "competitor_prices_sek": [
+            3319,
+            3459
+          ],
+          "days_in_stock": 79,
+          "units_in_stock": 85,
+          "sales_velocity_30d": 15,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3702",
+          "gtin": "7351003770296",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "White",
+          "store": "Malmö",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1938,
+          "current_price_sek": 3559,
+          "competitor_prices_sek": [
+            3309,
+            3459
+          ],
+          "days_in_stock": 92,
+          "units_in_stock": 84,
+          "sales_velocity_30d": 17,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3739",
+          "gtin": "7351003770296",
+          "product_name": "Robot Vacuum Cleaner",
+          "variant": "White",
+          "store": "Stockholm",
+          "brand": "Rentek",
+          "department": "Home",
+          "category": "Cleaning",
+          "subcategory": "Vacuums",
+          "supplier": "Clean Tech AB",
+          "cost_price_sek": 1938,
+          "current_price_sek": 3559,
+          "competitor_prices_sek": [
+            3299,
+            3459
+          ],
+          "days_in_stock": 44,
+          "units_in_stock": 38,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3776",
+          "gtin": "7351003900303",
+          "product_name": "Table Lamp Brass",
+          "variant": "Brass",
+          "store": "Göteborg",
+          "brand": "Ljusa",
+          "department": "Home",
+          "category": "Lighting",
+          "subcategory": "Lamps",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 160,
+          "current_price_sek": 449,
+          "competitor_prices_sek": [
+            459
+          ],
+          "days_in_stock": 84,
+          "units_in_stock": 70,
+          "sales_velocity_30d": 8,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3813",
+          "gtin": "7351003900303",
+          "product_name": "Table Lamp Brass",
+          "variant": "Brass",
+          "store": "Stockholm",
+          "brand": "Ljusa",
+          "department": "Home",
+          "category": "Lighting",
+          "subcategory": "Lamps",
+          "supplier": "Home Goods Sverige AB",
+          "cost_price_sek": 160,
+          "current_price_sek": 449,
+          "competitor_prices_sek": [
+            449
+          ],
+          "days_in_stock": 72,
+          "units_in_stock": 34,
+          "sales_velocity_30d": 7,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3850",
+          "gtin": "7351004030313",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "variant": "Blue",
+          "store": "Online",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Yoga",
+          "subcategory": "Mats",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            209,
+            229,
+            239
+          ],
+          "days_in_stock": 65,
+          "units_in_stock": 56,
+          "sales_velocity_30d": 14,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3887",
+          "gtin": "7351004030313",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "variant": "Blue",
+          "store": "Malmö",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Yoga",
+          "subcategory": "Mats",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            219,
+            239,
+            239
+          ],
+          "days_in_stock": 118,
+          "units_in_stock": 32,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 5
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3924",
+          "gtin": "7351004030313",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "variant": "Blue",
+          "store": "Göteborg",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Yoga",
+          "subcategory": "Mats",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 110,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            219,
+            219,
+            249
+          ],
+          "days_in_stock": 79,
+          "units_in_stock": 72,
+          "sales_velocity_30d": 18,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3961",
+          "gtin": "7351004160324",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "variant": "Green",
+          "store": "Malmö",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Yoga",
+          "subcategory": "Mats",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 112,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            219,
+            229
+          ],
+          "days_in_stock": 50,
+          "units_in_stock": 49,
+          "sales_velocity_30d": 8,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-3998",
+          "gtin": "7351004160324",
+          "product_name": "Non-Slip Yoga Mat 6mm",
+          "variant": "Green",
+          "store": "Stockholm",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Yoga",
+          "subcategory": "Mats",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 112,
+          "current_price_sek": 249,
+          "competitor_prices_sek": [
+            209,
+            229
+          ],
+          "days_in_stock": 62,
+          "units_in_stock": 88,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4035",
+          "gtin": "7351004290335",
+          "product_name": "Adjustable Dumbbell Set 20kg",
+          "variant": "Black",
+          "store": "Göteborg",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Fitness",
+          "subcategory": "Weights",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 650,
+          "current_price_sek": 1289,
+          "competitor_prices_sek": [
+            1199,
+            1249,
+            1329
+          ],
+          "days_in_stock": 28,
+          "units_in_stock": 43,
+          "sales_velocity_30d": 13,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4072",
+          "gtin": "7351004290335",
+          "product_name": "Adjustable Dumbbell Set 20kg",
+          "variant": "Black",
+          "store": "Uppsala",
+          "brand": "Zenfit",
+          "department": "Sports",
+          "category": "Fitness",
+          "subcategory": "Weights",
+          "supplier": "Active Supply AB",
+          "cost_price_sek": 650,
+          "current_price_sek": 1289,
+          "competitor_prices_sek": [
+            1209,
+            1259,
+            1329
+          ],
+          "days_in_stock": 65,
+          "units_in_stock": 39,
+          "sales_velocity_30d": 15,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4109",
+          "gtin": "7351004420343",
+          "product_name": "Trekking Bike 28-inch",
+          "variant": "54cm",
+          "store": "Uppsala",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Bikes",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 2900,
+          "current_price_sek": 5489,
+          "competitor_prices_sek": [
+            5239,
+            5359
+          ],
+          "days_in_stock": 89,
+          "units_in_stock": 51,
+          "sales_velocity_30d": 11,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4146",
+          "gtin": "7351004420343",
+          "product_name": "Trekking Bike 28-inch",
+          "variant": "54cm",
+          "store": "Stockholm",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Bikes",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 2900,
+          "current_price_sek": 5489,
+          "competitor_prices_sek": [
+            5229,
+            5369
+          ],
+          "days_in_stock": 60,
+          "units_in_stock": 69,
+          "sales_velocity_30d": 5,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4183",
+          "gtin": "7351004420343",
+          "product_name": "Trekking Bike 28-inch",
+          "variant": "54cm",
+          "store": "Göteborg",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Bikes",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 2900,
+          "current_price_sek": 5489,
+          "competitor_prices_sek": [
+            5229,
+            5379
+          ],
+          "days_in_stock": 64,
+          "units_in_stock": 80,
+          "sales_velocity_30d": 17,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4220",
+          "gtin": "7351004550354",
+          "product_name": "Trekking Bike 28-inch",
+          "variant": "58cm",
+          "store": "Göteborg",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Bikes",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 2958,
+          "current_price_sek": 5599,
+          "competitor_prices_sek": [
+            5189,
+            5749
+          ],
+          "days_in_stock": 112,
+          "units_in_stock": 31,
+          "sales_velocity_30d": 13,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4257",
+          "gtin": "7351004550354",
+          "product_name": "Trekking Bike 28-inch",
+          "variant": "58cm",
+          "store": "Malmö",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Bikes",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 2958,
+          "current_price_sek": 5599,
+          "competitor_prices_sek": [
+            5179,
+            5729
+          ],
+          "days_in_stock": 12,
+          "units_in_stock": 11,
+          "sales_velocity_30d": 49,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4294",
+          "gtin": "7351004680365",
+          "product_name": "Bike Helmet Adult",
+          "variant": "M",
+          "store": "Malmö",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Safety",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 190,
+          "current_price_sek": 499,
+          "competitor_prices_sek": [
+            429,
+            449,
+            469
+          ],
+          "days_in_stock": 104,
+          "units_in_stock": 46,
+          "sales_velocity_30d": 6,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4331",
+          "gtin": "7351004680365",
+          "product_name": "Bike Helmet Adult",
+          "variant": "M",
+          "store": "Online",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Safety",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 190,
+          "current_price_sek": 499,
+          "competitor_prices_sek": [
+            419,
+            459,
+            489
+          ],
+          "days_in_stock": 56,
+          "units_in_stock": 0,
+          "sales_velocity_30d": 29,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4368",
+          "gtin": "7351004810373",
+          "product_name": "Bike Helmet Adult",
+          "variant": "L",
+          "store": "Göteborg",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Safety",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 194,
+          "current_price_sek": 509,
+          "competitor_prices_sek": [
+            509,
+            519
+          ],
+          "days_in_stock": 63,
+          "units_in_stock": 44,
+          "sales_velocity_30d": 17,
+          "days_since_last_price_change": 90
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4405",
+          "gtin": "7351004810373",
+          "product_name": "Bike Helmet Adult",
+          "variant": "L",
+          "store": "Uppsala",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Safety",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 194,
+          "current_price_sek": 509,
+          "competitor_prices_sek": [
+            509,
+            529
+          ],
+          "days_in_stock": 365,
+          "units_in_stock": 192,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 30
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4442",
+          "gtin": "7351004810373",
+          "product_name": "Bike Helmet Adult",
+          "variant": "L",
+          "store": "Stockholm",
+          "brand": "Velora",
+          "department": "Sports",
+          "category": "Cycling",
+          "subcategory": "Safety",
+          "supplier": "Cykel Nord AB",
+          "cost_price_sek": 194,
+          "current_price_sek": 509,
+          "competitor_prices_sek": [
+            519,
+            519
+          ],
+          "days_in_stock": 80,
+          "units_in_stock": 34,
+          "sales_velocity_30d": 12,
+          "days_since_last_price_change": 25
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4479",
+          "gtin": "7351004940384",
+          "product_name": "Wooden Building Blocks 100pc",
+          "variant": "Standard",
+          "store": "Stockholm",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Building",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 120,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            309,
+            309
+          ],
+          "days_in_stock": 236,
+          "units_in_stock": 147,
+          "sales_velocity_30d": 1,
+          "days_since_last_price_change": 120
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4516",
+          "product_name": "Wooden Building Blocks 100pc",
+          "variant": "Standard",
+          "store": "Malmö",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Building",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 120,
+          "current_price_sek": 299,
+          "competitor_prices_sek": [
+            299,
+            299
+          ],
+          "days_in_stock": 24,
+          "units_in_stock": 23,
+          "sales_velocity_30d": 33,
+          "days_since_last_price_change": 60
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4553",
+          "gtin": "7351005070394",
+          "product_name": "Board Game Family Edition",
+          "variant": "Swedish",
+          "store": "Malmö",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Board Games",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 140,
+          "current_price_sek": 349,
+          "competitor_prices_sek": [
+            319,
+            339
+          ],
+          "days_in_stock": 80,
+          "units_in_stock": 45,
+          "sales_velocity_30d": 8,
+          "days_since_last_price_change": 40
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4590",
+          "gtin": "7351005070394",
+          "product_name": "Board Game Family Edition",
+          "variant": "Swedish",
+          "store": "Göteborg",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Board Games",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 140,
+          "current_price_sek": 349,
+          "competitor_prices_sek": [
+            329,
+            339
+          ],
+          "days_in_stock": 47,
+          "units_in_stock": 20,
+          "sales_velocity_30d": 37,
+          "days_since_last_price_change": 20
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4627",
+          "gtin": "7351005200401",
+          "product_name": "Board Game Family Edition",
+          "variant": "English",
+          "store": "Stockholm",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Board Games",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 143,
+          "current_price_sek": 359,
+          "competitor_prices_sek": [
+            329,
+            339
+          ],
+          "days_in_stock": 66,
+          "units_in_stock": 90,
+          "sales_velocity_30d": 3,
+          "days_since_last_price_change": 5
+        }
+      },
+      {
+        "json": {
+          "sku": "SKU-4664",
+          "gtin": "7351005200401",
+          "product_name": "Board Game Family Edition",
+          "variant": "English",
+          "store": "Uppsala",
+          "brand": "Lekland",
+          "department": "Toys",
+          "category": "Games",
+          "subcategory": "Board Games",
+          "supplier": "Leksaker Norden AB",
+          "cost_price_sek": 143,
+          "current_price_sek": 359,
+          "competitor_prices_sek": [
+            319,
+            339
+          ],
+          "days_in_stock": 62,
+          "units_in_stock": 40,
+          "sales_velocity_30d": 7,
+          "days_since_last_price_change": 20
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Report_Assembly_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalise": {
+      "main": [
+        [
+          {
+            "node": "Valid rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid rows?": {
+      "main": [
+        [
+          {
+            "node": "Pricing_Engine_JS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pricing_Engine_JS": {
+      "main": [
+        [
+          {
+            "node": "Policy_Source_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report_Assembly_JS": {
+      "main": [
+        [
+          {
+            "node": "Create MD File",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Report_HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Audit_JS": {
+      "main": [
+        [
+          {
+            "node": "Embed_Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed_Policy": {
+      "main": [
+        [
+          {
+            "node": "Policy_Retrieve_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Retrieve_JS": {
+      "main": [
+        [
+          {
+            "node": "Policy_Notes_Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Notes_Chain": {
+      "main": [
+        [
+          {
+            "node": "Policy_Collect_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Collect_JS": {
+      "main": [
+        [
+          {
+            "node": "Graph_Sync_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model (policy)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Policy_Notes_Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report_HTML": {
+      "main": [
+        [
+          {
+            "node": "Create HTML File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph_Sync_JS": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_Policy_Text": {
+      "main": [
+        [
+          {
+            "node": "Policy_Audit_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Source_JS": {
+      "main": [
+        [
+          {
+            "node": "Policy_Commit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Commit": {
+      "main": [
+        [
+          {
+            "node": "Policy_Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Manifest": {
+      "main": [
+        [
+          {
+            "node": "Policy_Docs_JS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy_Docs_JS": {
+      "main": [
+        [
+          {
+            "node": "Fetch_Policy_PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch_Policy_PDF": {
+      "main": [
+        [
+          {
+            "node": "Extract_Policy_Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "41fe8dc3-fbf2-409c-ac0a-f61f9aa87771",
+  "meta": {
+    "instanceId": "dd175af3834cfe61a76efa611d6288b1fa2f4c3e996af38e4b12cfc13ddf32bd"
+  },
+  "nodeGroups": [],
+  "id": "Szz6cgYvYEo574HP",
+  "tags": []
+}
