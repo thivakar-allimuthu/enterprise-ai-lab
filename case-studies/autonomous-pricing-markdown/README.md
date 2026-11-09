@@ -1,4 +1,4 @@
-# 🏷️ Autonomous Pricing & Markdown Agent
+# Autonomous Pricing & Markdown Agent
 
 An end-to-end, locally run **GitOps pipeline** for retail pricing. It validates inventory data, applies a rules-based pricing and markdown engine, **audits every decision against a written pricing policy**, retrieves the relevant policy clauses with **RAG**, records each decision in a **Neo4j knowledge graph**, and commits an **interactive HTML report** to GitHub.
 
@@ -8,7 +8,7 @@ Built on macOS with **n8n**, **Ollama** (`llama3.2`, `nomic-embed-text`), **Neo4
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 
 - [Overview](#-overview)
 - [Architecture](#-architecture)
@@ -28,7 +28,7 @@ Built on macOS with **n8n**, **Ollama** (`llama3.2`, `nomic-embed-text`), **Neo4
 
 ---
 
-## 🔎 Overview
+## Overview
 
 Retail pricing teams need fast, consistent and explainable markdown recommendations. Asking an LLM to do the arithmetic is risky: it drifts, invents numbers and breaks pricing guardrails. This project separates the concerns:
 
@@ -48,7 +48,7 @@ The LLMs run locally, so inventory data is not sent to a third-party AI service.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -76,7 +76,7 @@ All nodes sit on one main path. The two optional enrichments (policy notes and t
 
 ---
 
-## 🧰 Tech Stack
+## Tech Stack
 
 | Layer | Tool |
 |---|---|
@@ -92,7 +92,7 @@ All nodes sit on one main path. The two optional enrichments (policy notes and t
 
 ---
 
-## 📁 Repository Layout
+## Repository Layout
 
 Suggested structure for publishing:
 
@@ -127,7 +127,7 @@ Suggested structure for publishing:
 
 ---
 
-## 📥 Input Payload
+## Input Payload
 
 The webhook accepts inventory items as JSON (an array, or single objects). All monetary values are in **SEK**.
 
@@ -181,7 +181,7 @@ The legacy single field `competitor_price_sek` is still accepted.
 
 ---
 
-## ⚙️ Pipeline Stages
+## Pipeline Stages
 
 ### 1. Webhook (POST)
 Receives the inventory payload and starts the workflow.
@@ -191,8 +191,8 @@ A data-quality gate that runs before any pricing logic. Each row is **accepted**
 
 | Result | Triggers |
 |---|---|
-| ❌ **Rejected** (not priced) | Missing `sku`, `product_name`, `department` or `category`; duplicate `sku`; non-numeric or non-positive cost or price; invalid stock, age or velocity values; invalid GTIN format or GS1 check digit; non-numeric competitor values |
-| ⚠️ **Warning** (still priced) | Missing GTIN; current price below cost; no competitor prices; competitor price that looks like an outlier; stock older than 730 days |
+| **Rejected** (not priced) | Missing `sku`, `product_name`, `department` or `category`; duplicate `sku`; non-numeric or non-positive cost or price; invalid stock, age or velocity values; invalid GTIN format or GS1 check digit; non-numeric competitor values |
+| **Warning** (still priced) | Missing GTIN; current price below cost; no competitor prices; competitor price that looks like an outlier; stock older than 730 days |
 
 The node also **normalises** the data: numeric strings become numbers (a decimal comma is accepted), it unwraps the webhook body, and it derives competitor min, median and max. The `Valid rows?` IF node routes rejected rows to `Rejected rows` (kept with their raw input for review); valid rows continue.
 
@@ -279,7 +279,7 @@ The node uses the GitHub **edit** operation, so the file must already exist in t
 
 ---
 
-## 📚 Policy Audit and RAG
+## Policy Audit and RAG
 
 The policy is kept **in git**, as three short PDF documents and one manifest, in the `policies/` folder of the repository (24 clauses, `P-1.1` to `P-10.1`, split by topic):
 
@@ -358,7 +358,7 @@ A note that fails is **replaced by the list of retrieved clauses** and marked `(
 
 ---
 
-## 🕸️ Knowledge Graph
+## Knowledge Graph
 
 `Graph_Sync_JS` writes every run into **Neo4j** through the HTTP Query API (`/db/neo4j/query/v2`) and then reads back insights. It passes its input through unchanged and adds a `graph` field, so if Neo4j is unreachable the run continues with `graph.available = false` and the report says so.
 
@@ -402,7 +402,7 @@ These cross-store questions are the reason for the graph: a flat table cannot sh
 
 ---
 
-## 🛡️ The Summary Guard
+## The Summary Guard
 
 Small local models copy numbers well but can misstate what they mean. In testing, the LLM once described the largest single markdown as the average, and once claimed that all 15 SKUs had been repriced when only 14 were. A guard in `Report_Assembly_JS` checks the commentary before it is published.
 
@@ -420,7 +420,7 @@ The same idea, **verify before you trust**, is used for the policy clause notes 
 
 ---
 
-## 🖥️ The HTML Report
+## The HTML Report
 
 `Report_HTML` produces **one self-contained HTML file** (no external libraries, no network requests, adapts to light and dark mode). Everything comes from the calculated facts.
 
@@ -437,11 +437,11 @@ The same idea, **verify before you trust**, is used for the policy clause notes 
 
 The summary adapts to the run: it adds, drops or rewords sections (for example approvals, items below the minimum margin, policy violations, stock-transfer opportunities) depending on what the figures show. The Markdown report keeps the shorter one-paragraph summary. The footer states whether the AI commentary was included or omitted. The commentary text itself is part of the Markdown report (see [Known Limitations](#-known-limitations)).
 
-> Add a screenshot here after publishing, for example `docs/report-screenshot.png`.
+
 
 ---
 
-## 🛠️ Design Decisions & Issues Fixed
+## Design Decisions & Issues Fixed
 
 | # | Issue | Root cause | Fix |
 |---|---|---|---|
@@ -467,9 +467,7 @@ Because every figure in it must be correct. A template filled with calculated va
 
 ---
 
-## 🚀 Setup
-
-> The commands below are a starting point. Adjust ports, volumes, image tags and memory limits to your environment.
+## Setup
 
 ### Prerequisites
 
@@ -522,11 +520,9 @@ Open n8n at <http://localhost:5678> and Neo4j Browser at <http://localhost:7474>
 7. Keep the node names unchanged (`Pricing_Engine_JS`, `Validate & Normalise`, `Policy_Audit_JS`, `Policy_Retrieve_JS`, `Policy_Collect_JS`, `Graph_Sync_JS`, `Report_Assembly_JS`), because Code nodes refer to each other by name.
 8. Activate the workflow.
 
-> Credentials are not included in the workflow file; create your own.
-
 ---
 
-## 🧪 Testing
+## Testing
 
 **Inside n8n (no terminal needed)**
 
@@ -568,7 +564,7 @@ RETURN c.id, c.title, count(d) AS decisions ORDER BY decisions DESC;
 
 ---
 
-## ⚠️ Known Limitations
+## Known Limitations
 
 - **The guard is rule-based.** It verifies the numbers and claim types it knows about. It cannot judge tone or a made-up qualitative statement, and an unusual but correct phrasing may be rejected. The consequence is limited: the optional commentary is omitted.
 - **The HTML report shows only the commentary status.** The commentary text is part of the Markdown report, and the Markdown node is currently disabled. Re-enable `Create MD File` (its content field must read `{{ $json.text }}` from `Report_Assembly_JS`) or add the commentary to `Report_HTML` if you want it published.
@@ -588,7 +584,7 @@ RETURN c.id, c.title, count(d) AS decisions ORDER BY decisions DESC;
 
 ---
 
-## 🔭 Roadmap
+## Roadmap
 
 - [x] Input validation gate with GS1 check-digit test and rejected-rows branch
 - [x] Rules-based pricing engine: aging, stock cover, department floors, markdown cap, price endings, cooldown
